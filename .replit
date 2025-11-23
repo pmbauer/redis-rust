@@ -24,3 +24,6 @@ args = "cargo run --release"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[deployment]
+deploymentTarget = "cloudrun"
