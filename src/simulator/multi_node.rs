@@ -8,6 +8,7 @@
 
 use super::{DeterministicRng, Duration, VirtualTime};
 use crate::redis::{Command, CommandExecutor, RespValue, SDS};
+use crate::replication::anti_entropy::{AntiEntropyConfig, AntiEntropyManager, StateDigest};
 use crate::replication::gossip::GossipState;
 use crate::replication::gossip_router::GossipRouter;
 use crate::replication::hash_ring::HashRing;
@@ -43,6 +44,7 @@ pub struct SimulatedNode {
     pub executor: CommandExecutor,
     pub replica_state: ShardReplicaState,
     pub gossip_state: GossipState,
+    pub anti_entropy: AntiEntropyManager,
 }
 
 impl SimulatedNode {
@@ -57,7 +59,22 @@ impl SimulatedNode {
             executor,
             replica_state: ShardReplicaState::new(replica_id, config.consistency_level),
             gossip_state: GossipState::new(config),
+            anti_entropy: AntiEntropyManager::new(replica_id, AntiEntropyConfig::default()),
         }
+    }
+
+    /// Generate state digest for anti-entropy
+    pub fn generate_digest(&self) -> StateDigest {
+        self.anti_entropy.generate_digest(&self.replica_state.replicated_keys)
+    }
+
+    /// Get all keys for anti-entropy sync
+    pub fn get_all_deltas(&self) -> Vec<ReplicationDelta> {
+        self.replica_state
+            .replicated_keys
+            .iter()
+            .map(|(key, value)| ReplicationDelta::new(key.clone(), value.clone(), self.replica_id))
+            .collect()
     }
 
     /// Execute a command and record any replication deltas
@@ -137,6 +154,10 @@ pub struct MultiNodeSimulation {
     pub hash_ring: Option<Arc<RwLock<HashRing>>>,
     /// Gossip router for selective routing
     pub gossip_routers: HashMap<usize, GossipRouter>,
+    /// Enable automatic anti-entropy on partition heal
+    pub auto_anti_entropy: bool,
+    /// Anti-entropy sync statistics
+    pub anti_entropy_syncs: u64,
 }
 
 impl MultiNodeSimulation {
@@ -166,7 +187,22 @@ impl MultiNodeSimulation {
             history: Vec::new(),
             hash_ring: None,
             gossip_routers: HashMap::new(),
+            auto_anti_entropy: true,
+            anti_entropy_syncs: 0,
         }
+    }
+
+    /// Create a new simulation with anti-entropy disabled
+    pub fn new_without_anti_entropy(num_nodes: usize, seed: u64) -> Self {
+        let mut sim = Self::new(num_nodes, seed);
+        sim.auto_anti_entropy = false;
+        sim
+    }
+
+    /// Enable or disable automatic anti-entropy
+    pub fn with_auto_anti_entropy(mut self, enabled: bool) -> Self {
+        self.auto_anti_entropy = enabled;
+        self
     }
 
     /// Create a simulation with partitioned mode (selective gossip)
@@ -218,6 +254,8 @@ impl MultiNodeSimulation {
             history: Vec::new(),
             hash_ring: Some(hash_ring),
             gossip_routers,
+            auto_anti_entropy: true,
+            anti_entropy_syncs: 0,
         }
     }
 
@@ -279,7 +317,56 @@ impl MultiNodeSimulation {
         } else {
             (node_b, node_a)
         };
-        self.partitions.remove(&(a, b));
+
+        // Check if partition existed
+        let was_partitioned = self.partitions.remove(&(a, b));
+
+        // Trigger anti-entropy sync if enabled and partition existed
+        if was_partitioned && self.auto_anti_entropy {
+            self.run_anti_entropy_sync(node_a, node_b);
+        }
+    }
+
+    /// Run anti-entropy sync between two nodes
+    pub fn run_anti_entropy_sync(&mut self, node_a: usize, node_b: usize) {
+        // Get digests from both nodes
+        let digest_a = self.nodes[node_a].generate_digest();
+        let digest_b = self.nodes[node_b].generate_digest();
+
+        // Check if digests differ
+        if digest_a.differs_from(&digest_b) {
+            // Find divergent buckets
+            let divergent = digest_a.divergent_buckets(&digest_b);
+
+            if !divergent.is_empty() {
+                // Get keys in divergent buckets from both nodes
+                let deltas_a = self.nodes[node_a]
+                    .anti_entropy
+                    .get_keys_in_buckets(&self.nodes[node_a].replica_state.replicated_keys, &divergent);
+                let deltas_b = self.nodes[node_b]
+                    .anti_entropy
+                    .get_keys_in_buckets(&self.nodes[node_b].replica_state.replicated_keys, &divergent);
+
+                // Apply deltas bidirectionally
+                self.nodes[node_b].apply_remote_deltas(deltas_a);
+                self.nodes[node_a].apply_remote_deltas(deltas_b);
+
+                self.anti_entropy_syncs += 1;
+            }
+        }
+    }
+
+    /// Run full anti-entropy sync across all connected node pairs
+    pub fn run_full_anti_entropy(&mut self) {
+        let num_nodes = self.nodes.len();
+
+        for i in 0..num_nodes {
+            for j in (i + 1)..num_nodes {
+                if self.can_communicate(i, j) {
+                    self.run_anti_entropy_sync(i, j);
+                }
+            }
+        }
     }
 
     /// Check if two nodes can communicate
