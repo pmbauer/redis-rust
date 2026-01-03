@@ -58,4 +58,5 @@ localPort = 3000
 externalPort = 3000
 
 [nix]
-packages = ["redis"]
+packages = ["redis", "openjdk", "graphviz", "gnuplot", "bzip2"]
+channel = "stable-25_05"

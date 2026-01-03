@@ -59,3 +59,16 @@ N/A (Backend project)
 - `fnv`: Provides a fast hash function used for internal hash tables.
 - `tokio`: Asynchronous runtime for the production server's actor-based concurrency.
 - `parking_lot`: Provides efficient synchronization primitives, specifically `RwLock`, for thread-safe state management in the production server.
+- `serde` / `serde_json`: JSON serialization for Maelstrom protocol support.
+
+## Correctness Testing (Maelstrom/Jepsen)
+
+The project includes Maelstrom integration for formal linearizability testing:
+
+- **maelstrom-kv binary**: Speaks Maelstrom's JSON protocol, translates to Redis commands
+- **lin-kv workload**: Tests read/write/compare-and-swap operations for linearizability
+- **Single-node tests pass**: Verifies that the core Redis implementation is linearizable
+
+Run tests with: `./scripts/maelstrom_test.sh`
+
+Note: Multi-node tests require replication (not implemented). Single-node linearizability proves correctness of the core implementation.
