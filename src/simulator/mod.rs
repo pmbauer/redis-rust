@@ -2,11 +2,13 @@ mod executor;
 mod time;
 mod network;
 mod rng;
+pub mod harness;
 
 pub use executor::{Simulation, SimulationConfig};
 pub use time::{VirtualTime, Duration};
 pub use network::{Host, NetworkEvent, PacketDelay, NetworkFault};
 pub use rng::{DeterministicRng, buggify};
+pub use harness::{SimulationHarness, SimulatedRedisNode, ScenarioBuilder};
 
 use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
