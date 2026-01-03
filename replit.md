@@ -82,10 +82,14 @@ Key files:
 
 The project includes Maelstrom integration for formal linearizability testing:
 
-- **maelstrom-kv binary**: Speaks Maelstrom's JSON protocol, translates to Redis commands
+- **maelstrom-kv binary**: Single-node, speaks Maelstrom's JSON protocol, translates to Redis commands
+- **maelstrom-kv-replicated binary**: Multi-node with gossip-based replication between nodes
 - **lin-kv workload**: Tests read/write/compare-and-swap operations for linearizability
-- **Single-node tests pass**: Verifies that the core Redis implementation is linearizable
+- **Single-node tests**: Verify core Redis implementation is linearizable
+- **Multi-node tests**: Verify replicated state convergence with eventual consistency
 
 Run tests with: `./scripts/maelstrom_test.sh`
 
-Note: Multi-node tests require replication (not implemented). Single-node linearizability proves correctness of the core implementation.
+Test results (verified):
+- Single-node linearizability: PASS
+- Multi-node (3 nodes) with replication: PASS
