@@ -120,6 +120,18 @@ See [PERFORMANCE_COMPARISON.md](PERFORMANCE_COMPARISON.md) for detailed analysis
 
 ## Replication Performance
 
+### Single-Node Throughput Summary
+
+| Command | Throughput | Latency |
+|---------|------------|---------|
+| PING | 25,386 req/sec | 0.039 ms |
+| SET | 23,522 req/sec | 0.043 ms |
+| GET | 22,000 req/sec | 0.045 ms |
+| INCR | 24,000 req/sec | 0.042 ms |
+| MIXED | 23,000 req/sec | 0.043 ms |
+
+**Average Single-Node Throughput: ~25,000 ops/sec**
+
 ### Anna KVS-Style Replication
 
 The replicated server adds CRDT-based state synchronization with minimal overhead:
@@ -128,6 +140,7 @@ The replicated server adds CRDT-based state synchronization with minimal overhea
 |------|------------|-------|
 | Single-node | ~25,000 req/sec | No replication overhead |
 | Replicated (3 nodes) | ~20,000 req/sec | With gossip synchronization |
+| Replication Overhead | ~20% | Due to delta capture and gossip |
 
 ### Replication Features
 
