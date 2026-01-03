@@ -223,3 +223,31 @@ We successfully demonstrated the FoundationDB testing approach:
 - **Maelstrom integration** for formal linearizability testing
 
 **Trade-off accepted:** 4x slower than highly-optimized C code, but with distributed replication, formal correctness testing, and 100x easier to understand and maintain.
+
+---
+
+## Correctness Testing Results
+
+### Maelstrom/Jepsen Verification
+
+| Test | Configuration | Result | Verification |
+|------|---------------|--------|--------------|
+| Single-node linearizability | 1 node, lin-kv workload | **PASS** | Strict serializability |
+| Multi-node replication | 3 nodes, gossip sync | **PASS** | Eventual convergence |
+
+### Testing Methodology
+
+1. **Linearizability Testing**: Maelstrom records all operation histories and verifies they satisfy strict serializability constraints
+2. **Replication Verification**: Multi-node tests verify CRDT-based state converges correctly under concurrent writes
+3. **Fault Injection**: Tests include network delays and message reordering
+
+### Correctness Guarantees
+
+| Guarantee | Single-Node | Replicated (3 Nodes) |
+|-----------|-------------|---------------------|
+| Linearizable reads/writes | Yes | No (eventual) |
+| Monotonic reads | Yes | Yes |
+| Read-your-writes | Yes | Yes (same node) |
+| Convergence | N/A | Yes (CRDT) |
+
+See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for detailed test configurations and commands.
