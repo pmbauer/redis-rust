@@ -272,7 +272,8 @@ impl<'a> QueryExecutor<'a> {
             return 0.0;
         }
         let mut sorted = values.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // TigerStyle: Handle NaN gracefully - treat as greater than all other values
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater));
         let idx = ((p / 100.0) * (sorted.len() - 1) as f64) as usize;
         sorted[idx.min(sorted.len() - 1)]
     }

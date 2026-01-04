@@ -61,9 +61,11 @@ pub struct ProductionClock;
 
 impl Clock for ProductionClock {
     fn now(&self) -> Timestamp {
+        // TigerStyle: Handle system clock edge cases gracefully
+        // Clock may go backwards during NTP sync or VM migration
         let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
+            .unwrap_or_default();
         Timestamp(duration.as_millis() as u64)
     }
 
@@ -205,15 +207,30 @@ impl Default for ProductionRng {
     }
 }
 
+impl ProductionRng {
+    /// TigerStyle: Acquire lock with graceful poison recovery
+    ///
+    /// If a previous holder panicked, we still return the RNG since
+    /// the internal state is still valid for generating random numbers.
+    #[inline]
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, rand::rngs::StdRng> {
+        self.inner.lock().unwrap_or_else(|poisoned| {
+            // Log the poison but recover - RNG state is still usable
+            eprintln!("ProductionRng: recovering from poisoned lock");
+            poisoned.into_inner()
+        })
+    }
+}
+
 impl Rng for ProductionRng {
     fn next_u64(&mut self) -> u64 {
         use rand::RngCore;
-        self.inner.lock().unwrap().next_u64()
+        self.lock_inner().next_u64()
     }
 
     fn gen_bool(&mut self, probability: f64) -> bool {
         use rand::Rng;
-        self.inner.lock().unwrap().gen_bool(probability.clamp(0.0, 1.0))
+        self.lock_inner().gen_bool(probability.clamp(0.0, 1.0))
     }
 
     fn gen_range(&mut self, min: u64, max: u64) -> u64 {
@@ -221,12 +238,12 @@ impl Rng for ProductionRng {
         if min >= max {
             return min;
         }
-        self.inner.lock().unwrap().gen_range(min..max)
+        self.lock_inner().gen_range(min..max)
     }
 
     fn shuffle<T>(&mut self, slice: &mut [T]) {
         use rand::seq::SliceRandom;
-        slice.shuffle(&mut *self.inner.lock().unwrap());
+        slice.shuffle(&mut *self.lock_inner());
     }
 }
 

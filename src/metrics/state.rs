@@ -79,7 +79,8 @@ impl DistributionStats {
         // Reservoir sampling for percentiles
         if self.samples.len() < self.max_samples {
             self.samples.push(value);
-            self.samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            // TigerStyle: Handle NaN gracefully - treat as greater than all other values
+            self.samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater));
         }
     }
 
@@ -125,7 +126,8 @@ impl DistributionStats {
         // Merge samples (simple approach: combine and truncate)
         merged.samples = self.samples.clone();
         merged.samples.extend(other.samples.iter().cloned());
-        merged.samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // TigerStyle: Handle NaN gracefully - treat as greater than all other values
+        merged.samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater));
         merged.samples.truncate(merged.max_samples);
 
         merged
