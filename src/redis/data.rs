@@ -98,20 +98,123 @@ impl RedisList {
         }
     }
 
+    /// VOPR: Verify all invariants hold for this list
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        // Invariant 1: len() must match actual VecDeque size
+        debug_assert_eq!(
+            self.len(),
+            self.items.len(),
+            "Invariant violated: len() must equal items.len()"
+        );
+
+        // Invariant 2: is_empty() must be consistent with len()
+        debug_assert_eq!(
+            self.is_empty(),
+            self.items.is_empty(),
+            "Invariant violated: is_empty() must equal items.is_empty()"
+        );
+
+        // Invariant 3: is_empty() iff len() == 0
+        debug_assert_eq!(
+            self.is_empty(),
+            self.len() == 0,
+            "Invariant violated: is_empty() must equal len() == 0"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn verify_invariants(&self) {}
+
     pub fn lpush(&mut self, value: SDS) {
-        self.items.push_front(value);
+        #[cfg(debug_assertions)]
+        let pre_len = self.items.len();
+
+        self.items.push_front(value.clone());
+
+        // TigerStyle: Postconditions
+        debug_assert_eq!(
+            self.items.len(),
+            pre_len + 1,
+            "Postcondition violated: len must increase by 1 after lpush"
+        );
+        debug_assert_eq!(
+            self.items.front().map(|v| v.to_string()),
+            Some(value.to_string()),
+            "Postcondition violated: pushed value must be at front"
+        );
+
+        self.verify_invariants();
     }
 
     pub fn rpush(&mut self, value: SDS) {
-        self.items.push_back(value);
+        #[cfg(debug_assertions)]
+        let pre_len = self.items.len();
+
+        self.items.push_back(value.clone());
+
+        // TigerStyle: Postconditions
+        debug_assert_eq!(
+            self.items.len(),
+            pre_len + 1,
+            "Postcondition violated: len must increase by 1 after rpush"
+        );
+        debug_assert_eq!(
+            self.items.back().map(|v| v.to_string()),
+            Some(value.to_string()),
+            "Postcondition violated: pushed value must be at back"
+        );
+
+        self.verify_invariants();
     }
 
     pub fn lpop(&mut self) -> Option<SDS> {
-        self.items.pop_front()
+        #[cfg(debug_assertions)]
+        let pre_len = self.items.len();
+        #[cfg(debug_assertions)]
+        let was_empty = self.items.is_empty();
+
+        let result = self.items.pop_front();
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            if was_empty {
+                debug_assert!(result.is_none(), "Postcondition violated: pop from empty must return None");
+                debug_assert_eq!(self.items.len(), 0, "Postcondition violated: empty list must stay empty");
+            } else {
+                debug_assert!(result.is_some(), "Postcondition violated: pop from non-empty must return Some");
+                debug_assert_eq!(self.items.len(), pre_len - 1, "Postcondition violated: len must decrease by 1");
+            }
+        }
+
+        self.verify_invariants();
+        result
     }
 
     pub fn rpop(&mut self) -> Option<SDS> {
-        self.items.pop_back()
+        #[cfg(debug_assertions)]
+        let pre_len = self.items.len();
+        #[cfg(debug_assertions)]
+        let was_empty = self.items.is_empty();
+
+        let result = self.items.pop_back();
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            if was_empty {
+                debug_assert!(result.is_none(), "Postcondition violated: pop from empty must return None");
+                debug_assert_eq!(self.items.len(), 0, "Postcondition violated: empty list must stay empty");
+            } else {
+                debug_assert!(result.is_some(), "Postcondition violated: pop from non-empty must return Some");
+                debug_assert_eq!(self.items.len(), pre_len - 1, "Postcondition violated: len must decrease by 1");
+            }
+        }
+
+        self.verify_invariants();
+        result
     }
 
     pub fn len(&self) -> usize {
@@ -152,12 +255,108 @@ impl RedisSet {
         }
     }
 
+    /// VOPR: Verify all invariants hold for this set
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        // Invariant 1: len() must match actual HashSet size
+        debug_assert_eq!(
+            self.len(),
+            self.members.len(),
+            "Invariant violated: len() must equal members.len()"
+        );
+
+        // Invariant 2: is_empty() must be consistent with len()
+        debug_assert_eq!(
+            self.is_empty(),
+            self.members.is_empty(),
+            "Invariant violated: is_empty() must equal members.is_empty()"
+        );
+
+        // Invariant 3: All members must be retrievable via contains()
+        for member in &self.members {
+            debug_assert!(
+                self.members.contains(member),
+                "Invariant violated: member '{}' must be in set",
+                member
+            );
+        }
+
+        // Invariant 4: members() count must equal len()
+        debug_assert_eq!(
+            self.members().len(),
+            self.len(),
+            "Invariant violated: members().len() must equal len()"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn verify_invariants(&self) {}
+
     pub fn add(&mut self, member: SDS) -> bool {
-        self.members.insert(member.to_string())
+        let member_str = member.to_string();
+
+        #[cfg(debug_assertions)]
+        let pre_len = self.members.len();
+        #[cfg(debug_assertions)]
+        let already_exists = self.members.contains(&member_str);
+
+        let inserted = self.members.insert(member_str.clone());
+
+        // TigerStyle: Postconditions
+        debug_assert!(
+            self.members.contains(&member_str),
+            "Postcondition violated: member must exist after add"
+        );
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                inserted, !already_exists,
+                "Postcondition violated: insert result must match prior non-existence"
+            );
+            let expected_len = if already_exists { pre_len } else { pre_len + 1 };
+            debug_assert_eq!(
+                self.members.len(),
+                expected_len,
+                "Postcondition violated: len must be correct after add"
+            );
+        }
+
+        self.verify_invariants();
+        inserted
     }
 
     pub fn remove(&mut self, member: &SDS) -> bool {
-        self.members.remove(&member.to_string())
+        let member_str = member.to_string();
+
+        #[cfg(debug_assertions)]
+        let pre_len = self.members.len();
+        #[cfg(debug_assertions)]
+        let existed = self.members.contains(&member_str);
+
+        let removed = self.members.remove(&member_str);
+
+        // TigerStyle: Postconditions
+        debug_assert!(
+            !self.members.contains(&member_str),
+            "Postcondition violated: member must not exist after remove"
+        );
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                removed, existed,
+                "Postcondition violated: remove result must match prior existence"
+            );
+            let expected_len = if existed { pre_len - 1 } else { pre_len };
+            debug_assert_eq!(
+                self.members.len(),
+                expected_len,
+                "Postcondition violated: len must be correct after remove"
+            );
+        }
+
+        self.verify_invariants();
+        removed
     }
 
     pub fn contains(&self, member: &SDS) -> bool {
@@ -685,5 +884,224 @@ mod hash_tests {
         assert!(hash.is_empty());
         assert_eq!(hash.len(), 0);
         assert!(!hash.exists(&SDS::from_str("counter")));
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn test_list_lpush_and_lpop() {
+        let mut list = RedisList::new();
+
+        // lpush adds to front
+        list.lpush(SDS::from_str("first"));
+        assert_eq!(list.len(), 1);
+        assert!(!list.is_empty());
+
+        list.lpush(SDS::from_str("second"));
+        assert_eq!(list.len(), 2);
+
+        // lpop removes from front (LIFO for lpush/lpop)
+        let val = list.lpop();
+        assert_eq!(val.unwrap().to_string(), "second");
+        assert_eq!(list.len(), 1);
+
+        let val = list.lpop();
+        assert_eq!(val.unwrap().to_string(), "first");
+        assert!(list.is_empty());
+
+        // lpop from empty
+        let val = list.lpop();
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn test_list_rpush_and_rpop() {
+        let mut list = RedisList::new();
+
+        // rpush adds to back
+        list.rpush(SDS::from_str("first"));
+        list.rpush(SDS::from_str("second"));
+        assert_eq!(list.len(), 2);
+
+        // rpop removes from back (LIFO for rpush/rpop)
+        let val = list.rpop();
+        assert_eq!(val.unwrap().to_string(), "second");
+
+        let val = list.rpop();
+        assert_eq!(val.unwrap().to_string(), "first");
+        assert!(list.is_empty());
+
+        // rpop from empty
+        let val = list.rpop();
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn test_list_queue_behavior() {
+        let mut list = RedisList::new();
+
+        // rpush + lpop = FIFO queue
+        list.rpush(SDS::from_str("a"));
+        list.rpush(SDS::from_str("b"));
+        list.rpush(SDS::from_str("c"));
+
+        assert_eq!(list.lpop().unwrap().to_string(), "a");
+        assert_eq!(list.lpop().unwrap().to_string(), "b");
+        assert_eq!(list.lpop().unwrap().to_string(), "c");
+    }
+
+    #[test]
+    fn test_list_range() {
+        let mut list = RedisList::new();
+
+        list.rpush(SDS::from_str("a"));
+        list.rpush(SDS::from_str("b"));
+        list.rpush(SDS::from_str("c"));
+        list.rpush(SDS::from_str("d"));
+
+        // Full range
+        let range = list.range(0, -1);
+        assert_eq!(range.len(), 4);
+        assert_eq!(range[0].to_string(), "a");
+        assert_eq!(range[3].to_string(), "d");
+
+        // Subset
+        let range = list.range(1, 2);
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].to_string(), "b");
+        assert_eq!(range[1].to_string(), "c");
+
+        // Negative indices
+        let range = list.range(-2, -1);
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].to_string(), "c");
+        assert_eq!(range[1].to_string(), "d");
+    }
+
+    #[test]
+    fn test_list_invariants_maintained() {
+        let mut list = RedisList::new();
+
+        // Empty list invariants
+        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
+
+        // After lpush
+        list.lpush(SDS::from_str("x"));
+        assert!(!list.is_empty());
+        assert_eq!(list.len(), 1);
+
+        // After rpush
+        list.rpush(SDS::from_str("y"));
+        assert_eq!(list.len(), 2);
+
+        // After lpop
+        list.lpop();
+        assert_eq!(list.len(), 1);
+
+        // After rpop to empty
+        list.rpop();
+        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod set_tests {
+    use super::*;
+
+    #[test]
+    fn test_set_add_and_contains() {
+        let mut set = RedisSet::new();
+
+        // Add new member
+        let added = set.add(SDS::from_str("apple"));
+        assert!(added);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(&SDS::from_str("apple")));
+
+        // Add duplicate
+        let added = set.add(SDS::from_str("apple"));
+        assert!(!added);
+        assert_eq!(set.len(), 1);
+
+        // Add another
+        let added = set.add(SDS::from_str("banana"));
+        assert!(added);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_set_remove() {
+        let mut set = RedisSet::new();
+
+        set.add(SDS::from_str("a"));
+        set.add(SDS::from_str("b"));
+        assert_eq!(set.len(), 2);
+
+        // Remove existing
+        let removed = set.remove(&SDS::from_str("a"));
+        assert!(removed);
+        assert_eq!(set.len(), 1);
+        assert!(!set.contains(&SDS::from_str("a")));
+
+        // Remove non-existing
+        let removed = set.remove(&SDS::from_str("nonexistent"));
+        assert!(!removed);
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn test_set_members() {
+        let mut set = RedisSet::new();
+
+        set.add(SDS::from_str("x"));
+        set.add(SDS::from_str("y"));
+        set.add(SDS::from_str("z"));
+
+        let members = set.members();
+        assert_eq!(members.len(), 3);
+
+        // Convert to strings for easier checking
+        let member_strs: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+        assert!(member_strs.contains(&"x".to_string()));
+        assert!(member_strs.contains(&"y".to_string()));
+        assert!(member_strs.contains(&"z".to_string()));
+    }
+
+    #[test]
+    fn test_set_invariants_maintained() {
+        let mut set = RedisSet::new();
+
+        // Empty set
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+
+        // After add
+        set.add(SDS::from_str("member1"));
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 1);
+
+        // After duplicate add (no change)
+        set.add(SDS::from_str("member1"));
+        assert_eq!(set.len(), 1);
+
+        // After second add
+        set.add(SDS::from_str("member2"));
+        assert_eq!(set.len(), 2);
+
+        // After remove
+        set.remove(&SDS::from_str("member1"));
+        assert_eq!(set.len(), 1);
+        assert!(!set.contains(&SDS::from_str("member1")));
+        assert!(set.contains(&SDS::from_str("member2")));
+
+        // After remove to empty
+        set.remove(&SDS::from_str("member2"));
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
     }
 }
