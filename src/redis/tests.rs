@@ -224,6 +224,69 @@ mod command_parser_tests {
     }
 
     #[test]
+    fn test_hincrby_parsing() {
+        let resp = RespValue::Array(Some(vec![
+            RespValue::BulkString(Some(b"HINCRBY".to_vec())),
+            RespValue::BulkString(Some(b"myhash".to_vec())),
+            RespValue::BulkString(Some(b"field1".to_vec())),
+            RespValue::BulkString(Some(b"5".to_vec())),
+        ]));
+
+        let cmd = Command::from_resp(&resp).unwrap();
+        match cmd {
+            Command::HIncrBy(key, field, increment) => {
+                assert_eq!(key, "myhash");
+                assert_eq!(field.to_string(), "field1");
+                assert_eq!(increment, 5);
+            }
+            _ => panic!("Expected HIncrBy"),
+        }
+    }
+
+    #[test]
+    fn test_hincrby_negative() {
+        let resp = RespValue::Array(Some(vec![
+            RespValue::BulkString(Some(b"HINCRBY".to_vec())),
+            RespValue::BulkString(Some(b"counter".to_vec())),
+            RespValue::BulkString(Some(b"hits".to_vec())),
+            RespValue::BulkString(Some(b"-3".to_vec())),
+        ]));
+
+        let cmd = Command::from_resp(&resp).unwrap();
+        match cmd {
+            Command::HIncrBy(key, field, increment) => {
+                assert_eq!(key, "counter");
+                assert_eq!(field.to_string(), "hits");
+                assert_eq!(increment, -3);
+            }
+            _ => panic!("Expected HIncrBy"),
+        }
+    }
+
+    #[test]
+    fn test_hincrby_execution() {
+        use super::super::CommandExecutor;
+        use super::super::data::SDS;
+
+        let mut executor = CommandExecutor::new();
+
+        // First HINCRBY creates the field with the increment value
+        let cmd = Command::HIncrBy("myhash".to_string(), SDS::from_str("counter"), 5);
+        let result = executor.execute(&cmd);
+        assert_eq!(result, RespValue::Integer(5));
+
+        // Second HINCRBY increments existing value
+        let cmd = Command::HIncrBy("myhash".to_string(), SDS::from_str("counter"), 3);
+        let result = executor.execute(&cmd);
+        assert_eq!(result, RespValue::Integer(8));
+
+        // Negative increment (decrement)
+        let cmd = Command::HIncrBy("myhash".to_string(), SDS::from_str("counter"), -2);
+        let result = executor.execute(&cmd);
+        assert_eq!(result, RespValue::Integer(6));
+    }
+
+    #[test]
     fn test_ping_from_both_parsers() {
         let old_resp = RespValue::Array(Some(vec![
             RespValue::BulkString(Some(b"PING".to_vec()))

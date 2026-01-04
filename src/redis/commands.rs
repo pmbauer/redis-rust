@@ -43,6 +43,7 @@ pub enum Command {
     HSet(String, Vec<(SDS, SDS)>),
     HGet(String, SDS),
     HGetAll(String),
+    HIncrBy(String, SDS, i64),
     ZAdd(String, Vec<(f64, SDS)>),
     ZRange(String, isize, isize),
     ZRevRange(String, isize, isize, bool),  // bool = WITHSCORES
@@ -329,6 +330,15 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         Ok(Command::HGetAll(key))
                     }
+                    "HINCRBY" => {
+                        if elements.len() != 4 {
+                            return Err("HINCRBY requires 3 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let field = Self::extract_sds(&elements[2])?;
+                        let increment = Self::extract_i64(&elements[3])?;
+                        Ok(Command::HIncrBy(key, field, increment))
+                    }
                     "ZADD" => {
                         if elements.len() < 4 || (elements.len() - 2) % 2 != 0 {
                             return Err("ZADD requires key and score-member pairs".to_string());
@@ -415,6 +425,17 @@ impl Command {
                 s.parse::<f64>().map_err(|e| e.to_string())
             }
             _ => Err("Expected float".to_string()),
+        }
+    }
+
+    fn extract_i64(value: &RespValue) -> Result<i64, String> {
+        match value {
+            RespValue::BulkString(Some(data)) => {
+                let s = String::from_utf8_lossy(data);
+                s.parse::<i64>().map_err(|e| e.to_string())
+            }
+            RespValue::Integer(n) => Ok(*n),
+            _ => Err("Expected integer".to_string()),
         }
     }
 
@@ -585,6 +606,10 @@ impl Command {
                         if elements.len() != 2 { return Err("HGETALL requires 1 argument".to_string()); }
                         Ok(Command::HGetAll(Self::extract_string_zc(&elements[1])?))
                     }
+                    "HINCRBY" => {
+                        if elements.len() != 4 { return Err("HINCRBY requires 3 arguments".to_string()); }
+                        Ok(Command::HIncrBy(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?, Self::extract_i64_zc(&elements[3])?))
+                    }
                     "ZADD" => {
                         if elements.len() < 4 || (elements.len() - 2) % 2 != 0 { return Err("ZADD requires key and score-member pairs".to_string()); }
                         let key = Self::extract_string_zc(&elements[1])?;
@@ -655,6 +680,17 @@ impl Command {
             _ => Err("Expected float".to_string()),
         }
     }
+
+    fn extract_i64_zc(value: &RespValueZeroCopy) -> Result<i64, String> {
+        match value {
+            RespValueZeroCopy::BulkString(Some(data)) => {
+                let s = String::from_utf8_lossy(data);
+                s.parse::<i64>().map_err(|e| e.to_string())
+            }
+            RespValueZeroCopy::Integer(n) => Ok(*n),
+            _ => Err("Expected integer".to_string()),
+        }
+    }
 }
 
 pub struct CommandExecutor {
@@ -704,8 +740,9 @@ impl Command {
             Command::LPush(k, _) | Command::RPush(k, _) | Command::LPop(k) |
             Command::RPop(k) | Command::LRange(k, _, _) | Command::SAdd(k, _) |
             Command::SMembers(k) | Command::SIsMember(k, _) | Command::HSet(k, _) |
-            Command::HGet(k, _) | Command::HGetAll(k) | Command::ZAdd(k, _) |
-            Command::ZRange(k, _, _) | Command::ZRevRange(k, _, _, _) | Command::ZScore(k, _) => Some(k.as_str()),
+            Command::HGet(k, _) | Command::HGetAll(k) | Command::HIncrBy(k, _, _) |
+            Command::ZAdd(k, _) | Command::ZRange(k, _, _) | Command::ZRevRange(k, _, _, _) |
+            Command::ZScore(k, _) => Some(k.as_str()),
             Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
             Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
@@ -755,6 +792,7 @@ impl Command {
             Command::HSet(_, _) => "HSET",
             Command::HGet(_, _) => "HGET",
             Command::HGetAll(_) => "HGETALL",
+            Command::HIncrBy(_, _, _) => "HINCRBY",
             Command::ZAdd(_, _) => "ZADD",
             Command::ZRange(_, _, _) => "ZRANGE",
             Command::ZRevRange(_, _, _, _) => "ZREVRANGE",
@@ -1347,7 +1385,41 @@ impl CommandExecutor {
                     None => RespValue::Array(Some(Vec::new())),
                 }
             }
-            
+
+            Command::HIncrBy(key, field, increment) => {
+                let hash = self.data.entry(key.clone()).or_insert_with(|| {
+                    Value::Hash(RedisHash::new())
+                });
+
+                match hash {
+                    Value::Hash(h) => {
+                        let current = h.get(field).map(|v| v.to_string().parse::<i64>().ok()).flatten().unwrap_or(0);
+
+                        // TigerStyle: Use checked arithmetic to detect overflow
+                        let new_value = match current.checked_add(*increment) {
+                            Some(v) => v,
+                            None => return RespValue::Error("ERR increment would produce overflow".to_string()),
+                        };
+
+                        h.set(field.clone(), SDS::from_str(&new_value.to_string()));
+
+                        // TigerStyle: Assert invariants after mutation
+                        debug_assert!(
+                            h.get(field).is_some(),
+                            "Invariant violated: field must exist after HINCRBY"
+                        );
+                        debug_assert_eq!(
+                            h.get(field).map(|v| v.to_string().parse::<i64>().ok()).flatten(),
+                            Some(new_value),
+                            "Invariant violated: field value must equal computed value after HINCRBY"
+                        );
+
+                        RespValue::Integer(new_value)
+                    }
+                    _ => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                }
+            }
+
             Command::ZAdd(key, pairs) => {
                 if self.is_expired(key) {
                     self.data.remove(key);
