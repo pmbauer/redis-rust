@@ -1701,11 +1701,16 @@ impl CommandExecutor {
                 }
             }
 
-            // === NEW COMMANDS ===
+            // === NEW COMMANDS (TigerStyle + VOPR) ===
 
             Command::StrLen(key) => {
                 match self.get_value(key) {
-                    Some(Value::String(s)) => RespValue::Integer(s.len() as i64),
+                    Some(Value::String(s)) => {
+                        let len = s.len() as i64;
+                        // TigerStyle: Postcondition - length must be non-negative
+                        debug_assert!(len >= 0, "Invariant violated: STRLEN must return non-negative");
+                        RespValue::Integer(len)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
@@ -1713,7 +1718,12 @@ impl CommandExecutor {
 
             Command::LLen(key) => {
                 match self.get_value(key) {
-                    Some(Value::List(l)) => RespValue::Integer(l.len() as i64),
+                    Some(Value::List(l)) => {
+                        let len = l.len() as i64;
+                        // TigerStyle: Postcondition - length must be non-negative
+                        debug_assert!(len >= 0, "Invariant violated: LLEN must return non-negative");
+                        RespValue::Integer(len)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
@@ -1723,18 +1733,25 @@ impl CommandExecutor {
                 match self.get_value(key) {
                     Some(Value::List(l)) => {
                         let len = l.len() as isize;
+                        // TigerStyle: Handle negative indices (Redis convention)
                         let actual_index = if *index < 0 {
-                            (len + *index).max(0) as usize
-                        } else {
-                            (*index).min(len - 1) as usize
-                        };
-                        if actual_index < l.len() {
-                            let range = l.range(actual_index as isize, actual_index as isize);
-                            if let Some(item) = range.first() {
-                                RespValue::BulkString(Some(item.as_bytes().to_vec()))
-                            } else {
-                                RespValue::BulkString(None)
+                            let normalized = len + *index;
+                            if normalized < 0 {
+                                return RespValue::BulkString(None);
                             }
+                            normalized as usize
+                        } else if *index >= len {
+                            return RespValue::BulkString(None);
+                        } else {
+                            *index as usize
+                        };
+
+                        // TigerStyle: Precondition verified
+                        debug_assert!(actual_index < l.len(), "Invariant violated: index must be in bounds");
+
+                        let range = l.range(actual_index as isize, actual_index as isize);
+                        if let Some(item) = range.first() {
+                            RespValue::BulkString(Some(item.as_bytes().to_vec()))
                         } else {
                             RespValue::BulkString(None)
                         }
@@ -1747,12 +1764,25 @@ impl CommandExecutor {
             Command::SRem(key, members) => {
                 match self.get_value_mut(key) {
                     Some(Value::Set(s)) => {
+                        // TigerStyle: Capture pre-state for postcondition
+                        #[cfg(debug_assertions)]
+                        let pre_len = s.len();
+
                         let mut removed = 0i64;
                         for member in members {
                             if s.remove(member) {
                                 removed += 1;
                             }
                         }
+
+                        // TigerStyle: Postconditions
+                        #[cfg(debug_assertions)]
+                        {
+                            debug_assert!(removed >= 0, "Invariant violated: removed count must be non-negative");
+                            debug_assert!(removed <= members.len() as i64, "Invariant violated: can't remove more than requested");
+                            debug_assert_eq!(s.len(), pre_len - removed as usize, "Invariant violated: len must decrease by removed count");
+                        }
+
                         RespValue::Integer(removed)
                     }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1762,7 +1792,12 @@ impl CommandExecutor {
 
             Command::SCard(key) => {
                 match self.get_value(key) {
-                    Some(Value::Set(s)) => RespValue::Integer(s.len() as i64),
+                    Some(Value::Set(s)) => {
+                        let card = s.len() as i64;
+                        // TigerStyle: Postcondition
+                        debug_assert!(card >= 0, "Invariant violated: SCARD must return non-negative");
+                        RespValue::Integer(card)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
@@ -1771,12 +1806,25 @@ impl CommandExecutor {
             Command::HDel(key, fields) => {
                 match self.get_value_mut(key) {
                     Some(Value::Hash(h)) => {
+                        // TigerStyle: Capture pre-state for postcondition
+                        #[cfg(debug_assertions)]
+                        let pre_len = h.len();
+
                         let mut deleted = 0i64;
                         for field in fields {
                             if h.delete(field) {
                                 deleted += 1;
                             }
                         }
+
+                        // TigerStyle: Postconditions
+                        #[cfg(debug_assertions)]
+                        {
+                            debug_assert!(deleted >= 0, "Invariant violated: deleted count must be non-negative");
+                            debug_assert!(deleted <= fields.len() as i64, "Invariant violated: can't delete more than requested");
+                            debug_assert_eq!(h.len(), pre_len - deleted as usize, "Invariant violated: len must decrease by deleted count");
+                        }
+
                         RespValue::Integer(deleted)
                     }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1787,7 +1835,11 @@ impl CommandExecutor {
             Command::HKeys(key) => {
                 match self.get_value(key) {
                     Some(Value::Hash(h)) => {
-                        let keys: Vec<RespValue> = h.keys()
+                        let hash_keys = h.keys();
+                        // TigerStyle: Postcondition - keys count must equal len
+                        debug_assert_eq!(hash_keys.len(), h.len(), "Invariant violated: HKEYS count must equal HLEN");
+
+                        let keys: Vec<RespValue> = hash_keys
                             .iter()
                             .map(|k| RespValue::BulkString(Some(k.as_bytes().to_vec())))
                             .collect();
@@ -1801,7 +1853,11 @@ impl CommandExecutor {
             Command::HVals(key) => {
                 match self.get_value(key) {
                     Some(Value::Hash(h)) => {
-                        let vals: Vec<RespValue> = h.values()
+                        let hash_vals = h.values();
+                        // TigerStyle: Postcondition - values count must equal len
+                        debug_assert_eq!(hash_vals.len(), h.len(), "Invariant violated: HVALS count must equal HLEN");
+
+                        let vals: Vec<RespValue> = hash_vals
                             .iter()
                             .map(|v| RespValue::BulkString(Some(v.as_bytes().to_vec())))
                             .collect();
@@ -1814,7 +1870,12 @@ impl CommandExecutor {
 
             Command::HLen(key) => {
                 match self.get_value(key) {
-                    Some(Value::Hash(h)) => RespValue::Integer(h.len() as i64),
+                    Some(Value::Hash(h)) => {
+                        let len = h.len() as i64;
+                        // TigerStyle: Postcondition
+                        debug_assert!(len >= 0, "Invariant violated: HLEN must return non-negative");
+                        RespValue::Integer(len)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
@@ -1822,7 +1883,13 @@ impl CommandExecutor {
 
             Command::HExists(key, field) => {
                 match self.get_value(key) {
-                    Some(Value::Hash(h)) => RespValue::Integer(if h.exists(field) { 1 } else { 0 }),
+                    Some(Value::Hash(h)) => {
+                        let exists = h.exists(field);
+                        // TigerStyle: Postcondition - result must be 0 or 1
+                        let result = if exists { 1i64 } else { 0i64 };
+                        debug_assert!(result == 0 || result == 1, "Invariant violated: HEXISTS must return 0 or 1");
+                        RespValue::Integer(result)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
@@ -1831,12 +1898,25 @@ impl CommandExecutor {
             Command::ZRem(key, members) => {
                 match self.get_value_mut(key) {
                     Some(Value::SortedSet(zs)) => {
+                        // TigerStyle: Capture pre-state for postcondition
+                        #[cfg(debug_assertions)]
+                        let pre_len = zs.len();
+
                         let mut removed = 0i64;
                         for member in members {
                             if zs.remove(member) {
                                 removed += 1;
                             }
                         }
+
+                        // TigerStyle: Postconditions
+                        #[cfg(debug_assertions)]
+                        {
+                            debug_assert!(removed >= 0, "Invariant violated: removed count must be non-negative");
+                            debug_assert!(removed <= members.len() as i64, "Invariant violated: can't remove more than requested");
+                            debug_assert_eq!(zs.len(), pre_len - removed as usize, "Invariant violated: len must decrease by removed count");
+                        }
+
                         RespValue::Integer(removed)
                     }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
@@ -1848,7 +1928,11 @@ impl CommandExecutor {
                 match self.get_value(key) {
                     Some(Value::SortedSet(zs)) => {
                         match zs.rank(member) {
-                            Some(rank) => RespValue::Integer(rank as i64),
+                            Some(rank) => {
+                                // TigerStyle: Postcondition - rank must be valid index
+                                debug_assert!(rank < zs.len(), "Invariant violated: rank must be less than zset length");
+                                RespValue::Integer(rank as i64)
+                            }
                             None => RespValue::BulkString(None),
                         }
                     }
@@ -1859,7 +1943,12 @@ impl CommandExecutor {
 
             Command::ZCard(key) => {
                 match self.get_value(key) {
-                    Some(Value::SortedSet(zs)) => RespValue::Integer(zs.len() as i64),
+                    Some(Value::SortedSet(zs)) => {
+                        let card = zs.len() as i64;
+                        // TigerStyle: Postcondition
+                        debug_assert!(card >= 0, "Invariant violated: ZCARD must return non-negative");
+                        RespValue::Integer(card)
+                    }
                     Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                     None => RespValue::Integer(0),
                 }
