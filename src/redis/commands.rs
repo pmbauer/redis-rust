@@ -40,11 +40,12 @@ pub enum Command {
     SAdd(String, Vec<SDS>),
     SMembers(String),
     SIsMember(String, SDS),
-    HSet(String, SDS, SDS),
+    HSet(String, Vec<(SDS, SDS)>),
     HGet(String, SDS),
     HGetAll(String),
     ZAdd(String, Vec<(f64, SDS)>),
     ZRange(String, isize, isize),
+    ZRevRange(String, isize, isize, bool),  // bool = WITHSCORES
     ZScore(String, SDS),
     Info,
     Ping,
@@ -300,13 +301,18 @@ impl Command {
                         Ok(Command::SIsMember(key, member))
                     }
                     "HSET" => {
-                        if elements.len() != 4 {
-                            return Err("HSET requires 3 arguments".to_string());
+                        // HSET key field value [field value ...]
+                        if elements.len() < 4 || (elements.len() - 2) % 2 != 0 {
+                            return Err("HSET requires key and field-value pairs".to_string());
                         }
                         let key = Self::extract_string(&elements[1])?;
-                        let field = Self::extract_sds(&elements[2])?;
-                        let value = Self::extract_sds(&elements[3])?;
-                        Ok(Command::HSet(key, field, value))
+                        let mut pairs = Vec::with_capacity((elements.len() - 2) / 2);
+                        for i in (2..elements.len()).step_by(2) {
+                            let field = Self::extract_sds(&elements[i])?;
+                            let value = Self::extract_sds(&elements[i + 1])?;
+                            pairs.push((field, value));
+                        }
+                        Ok(Command::HSet(key, pairs))
                     }
                     "HGET" => {
                         if elements.len() != 3 {
@@ -344,6 +350,21 @@ impl Command {
                         let start = Self::extract_integer(&elements[2])?;
                         let stop = Self::extract_integer(&elements[3])?;
                         Ok(Command::ZRange(key, start, stop))
+                    }
+                    "ZREVRANGE" => {
+                        if elements.len() < 4 || elements.len() > 5 {
+                            return Err("ZREVRANGE requires 3 or 4 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let start = Self::extract_integer(&elements[2])?;
+                        let stop = Self::extract_integer(&elements[3])?;
+                        let with_scores = if elements.len() == 5 {
+                            let opt = Self::extract_string(&elements[4])?.to_uppercase();
+                            opt == "WITHSCORES"
+                        } else {
+                            false
+                        };
+                        Ok(Command::ZRevRange(key, start, stop, with_scores))
                     }
                     "ZSCORE" => {
                         if elements.len() != 3 {
@@ -543,8 +564,18 @@ impl Command {
                         Ok(Command::SIsMember(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
                     }
                     "HSET" => {
-                        if elements.len() != 4 { return Err("HSET requires 3 arguments".to_string()); }
-                        Ok(Command::HSet(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?, Self::extract_sds_zc(&elements[3])?))
+                        // HSET key field value [field value ...]
+                        if elements.len() < 4 || (elements.len() - 2) % 2 != 0 {
+                            return Err("HSET requires key and field-value pairs".to_string());
+                        }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let mut pairs = Vec::with_capacity((elements.len() - 2) / 2);
+                        for i in (2..elements.len()).step_by(2) {
+                            let field = Self::extract_sds_zc(&elements[i])?;
+                            let value = Self::extract_sds_zc(&elements[i + 1])?;
+                            pairs.push((field, value));
+                        }
+                        Ok(Command::HSet(key, pairs))
                     }
                     "HGET" => {
                         if elements.len() != 3 { return Err("HGET requires 2 arguments".to_string()); }
@@ -566,6 +597,18 @@ impl Command {
                     "ZRANGE" => {
                         if elements.len() != 4 { return Err("ZRANGE requires 3 arguments".to_string()); }
                         Ok(Command::ZRange(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?, Self::extract_integer_zc(&elements[3])?))
+                    }
+                    "ZREVRANGE" => {
+                        if elements.len() < 4 || elements.len() > 5 { return Err("ZREVRANGE requires 3 or 4 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let start = Self::extract_integer_zc(&elements[2])?;
+                        let stop = Self::extract_integer_zc(&elements[3])?;
+                        let with_scores = if elements.len() == 5 {
+                            Self::extract_string_zc(&elements[4])?.to_uppercase() == "WITHSCORES"
+                        } else {
+                            false
+                        };
+                        Ok(Command::ZRevRange(key, start, stop, with_scores))
                     }
                     "ZSCORE" => {
                         if elements.len() != 3 { return Err("ZSCORE requires 2 arguments".to_string()); }
@@ -642,6 +685,7 @@ impl Command {
             Command::HGetAll(_) |
             Command::LRange(_, _, _) |
             Command::ZRange(_, _, _) |
+            Command::ZRevRange(_, _, _, _) |
             Command::ZScore(_, _) |
             Command::Info |
             Command::Ping
@@ -659,15 +703,65 @@ impl Command {
             Command::DecrBy(k, _) | Command::Append(k, _) | Command::GetSet(k, _) |
             Command::LPush(k, _) | Command::RPush(k, _) | Command::LPop(k) |
             Command::RPop(k) | Command::LRange(k, _, _) | Command::SAdd(k, _) |
-            Command::SMembers(k) | Command::SIsMember(k, _) | Command::HSet(k, _, _) |
+            Command::SMembers(k) | Command::SIsMember(k, _) | Command::HSet(k, _) |
             Command::HGet(k, _) | Command::HGetAll(k) | Command::ZAdd(k, _) |
-            Command::ZRange(k, _, _) | Command::ZScore(k, _) => Some(k.as_str()),
+            Command::ZRange(k, _, _) | Command::ZRevRange(k, _, _, _) | Command::ZScore(k, _) => Some(k.as_str()),
             Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
             Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::BatchSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
             Command::Keys(_) | Command::FlushDb | Command::FlushAll |
             Command::Info | Command::Ping | Command::Unknown(_) => None,
+        }
+    }
+
+    /// Returns the command name as a string (for metrics/tracing)
+    #[inline]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Command::Get(_) => "GET",
+            Command::Set(_, _) => "SET",
+            Command::SetEx(_, _, _) => "SETEX",
+            Command::SetNx(_, _) => "SETNX",
+            Command::Del(_) => "DEL",
+            Command::Exists(_) => "EXISTS",
+            Command::TypeOf(_) => "TYPE",
+            Command::Keys(_) => "KEYS",
+            Command::FlushDb => "FLUSHDB",
+            Command::FlushAll => "FLUSHALL",
+            Command::Expire(_, _) => "EXPIRE",
+            Command::ExpireAt(_, _) => "EXPIREAT",
+            Command::PExpireAt(_, _) => "PEXPIREAT",
+            Command::Ttl(_) => "TTL",
+            Command::Pttl(_) => "PTTL",
+            Command::Persist(_) => "PERSIST",
+            Command::Incr(_) => "INCR",
+            Command::Decr(_) => "DECR",
+            Command::IncrBy(_, _) => "INCRBY",
+            Command::DecrBy(_, _) => "DECRBY",
+            Command::Append(_, _) => "APPEND",
+            Command::GetSet(_, _) => "GETSET",
+            Command::MGet(_) => "MGET",
+            Command::MSet(_) => "MSET",
+            Command::BatchSet(_) => "BATCHSET",
+            Command::LPush(_, _) => "LPUSH",
+            Command::RPush(_, _) => "RPUSH",
+            Command::LPop(_) => "LPOP",
+            Command::RPop(_) => "RPOP",
+            Command::LRange(_, _, _) => "LRANGE",
+            Command::SAdd(_, _) => "SADD",
+            Command::SMembers(_) => "SMEMBERS",
+            Command::SIsMember(_, _) => "SISMEMBER",
+            Command::HSet(_, _) => "HSET",
+            Command::HGet(_, _) => "HGET",
+            Command::HGetAll(_) => "HGETALL",
+            Command::ZAdd(_, _) => "ZADD",
+            Command::ZRange(_, _, _) => "ZRANGE",
+            Command::ZRevRange(_, _, _, _) => "ZREVRANGE",
+            Command::ZScore(_, _) => "ZSCORE",
+            Command::Info => "INFO",
+            Command::Ping => "PING",
+            Command::Unknown(_) => "UNKNOWN",
         }
     }
 }
@@ -1204,7 +1298,7 @@ impl CommandExecutor {
                 }
             }
             
-            Command::HSet(key, field, value) => {
+            Command::HSet(key, pairs) => {
                 if self.is_expired(key) {
                     self.data.remove(key);
                     self.expirations.remove(key);
@@ -1213,8 +1307,14 @@ impl CommandExecutor {
                 self.access_times.insert(key.clone(), self.current_time);
                 match hash {
                     Value::Hash(h) => {
-                        h.set(field.clone(), value.clone());
-                        RespValue::Integer(1)
+                        let mut new_fields = 0i64;
+                        for (field, value) in pairs {
+                            if !h.exists(field) {
+                                new_fields += 1;
+                            }
+                            h.set(field.clone(), value.clone());
+                        }
+                        RespValue::Integer(new_fields)
                     }
                     _ => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
                 }
@@ -1283,7 +1383,31 @@ impl CommandExecutor {
                     None => RespValue::Array(Some(Vec::new())),
                 }
             }
-            
+
+            Command::ZRevRange(key, start, stop, with_scores) => {
+                match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        let range = zs.rev_range(*start, *stop);
+                        if *with_scores {
+                            let mut elements = Vec::with_capacity(range.len() * 2);
+                            for (m, s) in range {
+                                elements.push(RespValue::BulkString(Some(m.as_bytes().to_vec())));
+                                elements.push(RespValue::BulkString(Some(s.to_string().into_bytes())));
+                            }
+                            RespValue::Array(Some(elements))
+                        } else {
+                            let elements: Vec<RespValue> = range
+                                .iter()
+                                .map(|(m, _)| RespValue::BulkString(Some(m.as_bytes().to_vec())))
+                                .collect();
+                            RespValue::Array(Some(elements))
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Array(Some(Vec::new())),
+                }
+            }
+
             Command::ZScore(key, member) => {
                 match self.get_value(key) {
                     Some(Value::SortedSet(zs)) => {

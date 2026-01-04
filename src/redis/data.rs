@@ -290,6 +290,24 @@ impl RedisSortedSet {
             .collect()
     }
 
+    pub fn rev_range(&self, start: isize, stop: isize) -> Vec<(SDS, f64)> {
+        let len = self.sorted_members.len() as isize;
+        let start = if start < 0 { (len + start).max(0) } else { start.min(len) };
+        let stop = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) };
+
+        if start > stop || start >= len {
+            return Vec::new();
+        }
+
+        self.sorted_members
+            .iter()
+            .rev()
+            .skip(start as usize)
+            .take((stop - start + 1) as usize)
+            .map(|(m, s)| (SDS::from_str(m), *s))
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.members.len()
     }
