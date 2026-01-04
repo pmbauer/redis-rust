@@ -181,7 +181,7 @@ cargo test --all
 |---------|-------------------|---------------------|
 | Performance (SET/GET) | Baseline | ~97% of Redis |
 | Pipelining | Full support | **113-134% FASTER** |
-| Persistence (RDB/AOF) | Yes | No |
+| Persistence (RDB/AOF) | Yes | Yes (Streaming to Object Store) |
 | Clustering | Redis Cluster | Anna-style CRDT |
 | Consistency | Single-leader strong | Eventual/Causal |
 | Pub/Sub | Yes | No |
@@ -192,7 +192,7 @@ cargo test --all
 | Deterministic Testing | No | Yes (DST framework) |
 | Datadog Integration | Via plugin | Native (feature flag) |
 
-**Trade-offs**: We sacrifice some Redis features (persistence, pub/sub) in favor of coordination-free replication and deterministic simulation testing.
+**Trade-offs**: We sacrifice some Redis features (pub/sub, Lua) in favor of coordination-free replication, streaming persistence to object stores (S3/local), and deterministic simulation testing.
 
 ## Project Structure
 

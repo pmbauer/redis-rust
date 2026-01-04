@@ -6,48 +6,70 @@ use crate::simulator::VirtualTime;
 
 #[derive(Debug, Clone)]
 pub enum Command {
+    // String commands
     Get(String),
     Set(String, SDS),
     SetEx(String, i64, SDS),
     SetNx(String, SDS),
+    Append(String, SDS),
+    GetSet(String, SDS),
+    StrLen(String),
+    MGet(Vec<String>),
+    MSet(Vec<(String, SDS)>),
+    /// Internal command for batched SET within a single shard (not exposed via RESP)
+    BatchSet(Vec<(String, SDS)>),
+    // Counter commands
+    Incr(String),
+    Decr(String),
+    IncrBy(String, i64),
+    DecrBy(String, i64),
+    // Key commands
     Del(String),
     Exists(Vec<String>),
     TypeOf(String),
     Keys(String),
     FlushDb,
     FlushAll,
+    // Expiration commands
     Expire(String, i64),
     ExpireAt(String, i64),
     PExpireAt(String, i64),
     Ttl(String),
     Pttl(String),
     Persist(String),
-    Incr(String),
-    Decr(String),
-    IncrBy(String, i64),
-    DecrBy(String, i64),
-    Append(String, SDS),
-    GetSet(String, SDS),
-    MGet(Vec<String>),
-    MSet(Vec<(String, SDS)>),
-    /// Internal command for batched SET within a single shard (not exposed via RESP)
-    BatchSet(Vec<(String, SDS)>),
+    // List commands
     LPush(String, Vec<SDS>),
     RPush(String, Vec<SDS>),
     LPop(String),
     RPop(String),
+    LLen(String),
+    LIndex(String, isize),
     LRange(String, isize, isize),
+    // Set commands
     SAdd(String, Vec<SDS>),
+    SRem(String, Vec<SDS>),
     SMembers(String),
     SIsMember(String, SDS),
+    SCard(String),
+    // Hash commands
     HSet(String, Vec<(SDS, SDS)>),
     HGet(String, SDS),
+    HDel(String, Vec<SDS>),
     HGetAll(String),
+    HKeys(String),
+    HVals(String),
+    HLen(String),
+    HExists(String, SDS),
     HIncrBy(String, SDS, i64),
+    // Sorted set commands
     ZAdd(String, Vec<(f64, SDS)>),
+    ZRem(String, Vec<SDS>),
     ZRange(String, isize, isize),
     ZRevRange(String, isize, isize, bool),  // bool = WITHSCORES
     ZScore(String, SDS),
+    ZRank(String, SDS),
+    ZCard(String),
+    // Server commands
     Info,
     Ping,
     Unknown(String),
@@ -220,6 +242,13 @@ impl Command {
                         let value = Self::extract_sds(&elements[2])?;
                         Ok(Command::GetSet(key, value))
                     }
+                    "STRLEN" => {
+                        if elements.len() != 2 {
+                            return Err("STRLEN requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::StrLen(key))
+                    }
                     "MGET" => {
                         if elements.len() < 2 {
                             return Err("MGET requires at least 1 argument".to_string());
@@ -278,6 +307,21 @@ impl Command {
                         let stop = Self::extract_integer(&elements[3])?;
                         Ok(Command::LRange(key, start, stop))
                     }
+                    "LLEN" => {
+                        if elements.len() != 2 {
+                            return Err("LLEN requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::LLen(key))
+                    }
+                    "LINDEX" => {
+                        if elements.len() != 3 {
+                            return Err("LINDEX requires 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let index = Self::extract_integer(&elements[2])?;
+                        Ok(Command::LIndex(key, index))
+                    }
                     "SADD" => {
                         if elements.len() < 3 {
                             return Err("SADD requires at least 2 arguments".to_string());
@@ -300,6 +344,21 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         let member = Self::extract_sds(&elements[2])?;
                         Ok(Command::SIsMember(key, member))
+                    }
+                    "SREM" => {
+                        if elements.len() < 3 {
+                            return Err("SREM requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let members = elements[2..].iter().map(Self::extract_sds).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::SRem(key, members))
+                    }
+                    "SCARD" => {
+                        if elements.len() != 2 {
+                            return Err("SCARD requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::SCard(key))
                     }
                     "HSET" => {
                         // HSET key field value [field value ...]
@@ -338,6 +397,43 @@ impl Command {
                         let field = Self::extract_sds(&elements[2])?;
                         let increment = Self::extract_i64(&elements[3])?;
                         Ok(Command::HIncrBy(key, field, increment))
+                    }
+                    "HDEL" => {
+                        if elements.len() < 3 {
+                            return Err("HDEL requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let fields = elements[2..].iter().map(Self::extract_sds).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::HDel(key, fields))
+                    }
+                    "HKEYS" => {
+                        if elements.len() != 2 {
+                            return Err("HKEYS requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::HKeys(key))
+                    }
+                    "HVALS" => {
+                        if elements.len() != 2 {
+                            return Err("HVALS requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::HVals(key))
+                    }
+                    "HLEN" => {
+                        if elements.len() != 2 {
+                            return Err("HLEN requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::HLen(key))
+                    }
+                    "HEXISTS" => {
+                        if elements.len() != 3 {
+                            return Err("HEXISTS requires 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let field = Self::extract_sds(&elements[2])?;
+                        Ok(Command::HExists(key, field))
                     }
                     "ZADD" => {
                         if elements.len() < 4 || (elements.len() - 2) % 2 != 0 {
@@ -383,6 +479,29 @@ impl Command {
                         let key = Self::extract_string(&elements[1])?;
                         let member = Self::extract_sds(&elements[2])?;
                         Ok(Command::ZScore(key, member))
+                    }
+                    "ZREM" => {
+                        if elements.len() < 3 {
+                            return Err("ZREM requires at least 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let members = elements[2..].iter().map(Self::extract_sds).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::ZRem(key, members))
+                    }
+                    "ZRANK" => {
+                        if elements.len() != 3 {
+                            return Err("ZRANK requires 2 arguments".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        let member = Self::extract_sds(&elements[2])?;
+                        Ok(Command::ZRank(key, member))
+                    }
+                    "ZCARD" => {
+                        if elements.len() != 2 {
+                            return Err("ZCARD requires 1 argument".to_string());
+                        }
+                        let key = Self::extract_string(&elements[1])?;
+                        Ok(Command::ZCard(key))
                     }
                     _ => Ok(Command::Unknown(cmd_name)),
                 }
@@ -534,6 +653,10 @@ impl Command {
                         if elements.len() != 3 { return Err("GETSET requires 2 arguments".to_string()); }
                         Ok(Command::GetSet(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
                     }
+                    "STRLEN" => {
+                        if elements.len() != 2 { return Err("STRLEN requires 1 argument".to_string()); }
+                        Ok(Command::StrLen(Self::extract_string_zc(&elements[1])?))
+                    }
                     "MGET" => {
                         if elements.len() < 2 { return Err("MGET requires at least 1 argument".to_string()); }
                         Ok(Command::MGet(elements[1..].iter().map(Self::extract_string_zc).collect::<Result<Vec<_>, _>>()?))
@@ -570,6 +693,14 @@ impl Command {
                         if elements.len() != 4 { return Err("LRANGE requires 3 arguments".to_string()); }
                         Ok(Command::LRange(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?, Self::extract_integer_zc(&elements[3])?))
                     }
+                    "LLEN" => {
+                        if elements.len() != 2 { return Err("LLEN requires 1 argument".to_string()); }
+                        Ok(Command::LLen(Self::extract_string_zc(&elements[1])?))
+                    }
+                    "LINDEX" => {
+                        if elements.len() != 3 { return Err("LINDEX requires 2 arguments".to_string()); }
+                        Ok(Command::LIndex(Self::extract_string_zc(&elements[1])?, Self::extract_integer_zc(&elements[2])?))
+                    }
                     "SADD" => {
                         if elements.len() < 3 { return Err("SADD requires key and members".to_string()); }
                         let key = Self::extract_string_zc(&elements[1])?;
@@ -583,6 +714,16 @@ impl Command {
                     "SISMEMBER" => {
                         if elements.len() != 3 { return Err("SISMEMBER requires 2 arguments".to_string()); }
                         Ok(Command::SIsMember(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
+                    }
+                    "SREM" => {
+                        if elements.len() < 3 { return Err("SREM requires at least 2 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let members = elements[2..].iter().map(Self::extract_sds_zc).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::SRem(key, members))
+                    }
+                    "SCARD" => {
+                        if elements.len() != 2 { return Err("SCARD requires 1 argument".to_string()); }
+                        Ok(Command::SCard(Self::extract_string_zc(&elements[1])?))
                     }
                     "HSET" => {
                         // HSET key field value [field value ...]
@@ -609,6 +750,28 @@ impl Command {
                     "HINCRBY" => {
                         if elements.len() != 4 { return Err("HINCRBY requires 3 arguments".to_string()); }
                         Ok(Command::HIncrBy(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?, Self::extract_i64_zc(&elements[3])?))
+                    }
+                    "HDEL" => {
+                        if elements.len() < 3 { return Err("HDEL requires at least 2 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let fields = elements[2..].iter().map(Self::extract_sds_zc).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::HDel(key, fields))
+                    }
+                    "HKEYS" => {
+                        if elements.len() != 2 { return Err("HKEYS requires 1 argument".to_string()); }
+                        Ok(Command::HKeys(Self::extract_string_zc(&elements[1])?))
+                    }
+                    "HVALS" => {
+                        if elements.len() != 2 { return Err("HVALS requires 1 argument".to_string()); }
+                        Ok(Command::HVals(Self::extract_string_zc(&elements[1])?))
+                    }
+                    "HLEN" => {
+                        if elements.len() != 2 { return Err("HLEN requires 1 argument".to_string()); }
+                        Ok(Command::HLen(Self::extract_string_zc(&elements[1])?))
+                    }
+                    "HEXISTS" => {
+                        if elements.len() != 3 { return Err("HEXISTS requires 2 arguments".to_string()); }
+                        Ok(Command::HExists(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
                     }
                     "ZADD" => {
                         if elements.len() < 4 || (elements.len() - 2) % 2 != 0 { return Err("ZADD requires key and score-member pairs".to_string()); }
@@ -638,6 +801,20 @@ impl Command {
                     "ZSCORE" => {
                         if elements.len() != 3 { return Err("ZSCORE requires 2 arguments".to_string()); }
                         Ok(Command::ZScore(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
+                    }
+                    "ZREM" => {
+                        if elements.len() < 3 { return Err("ZREM requires at least 2 arguments".to_string()); }
+                        let key = Self::extract_string_zc(&elements[1])?;
+                        let members = elements[2..].iter().map(Self::extract_sds_zc).collect::<Result<Vec<_>, _>>()?;
+                        Ok(Command::ZRem(key, members))
+                    }
+                    "ZRANK" => {
+                        if elements.len() != 3 { return Err("ZRANK requires 2 arguments".to_string()); }
+                        Ok(Command::ZRank(Self::extract_string_zc(&elements[1])?, Self::extract_sds_zc(&elements[2])?))
+                    }
+                    "ZCARD" => {
+                        if elements.len() != 2 { return Err("ZCARD requires 1 argument".to_string()); }
+                        Ok(Command::ZCard(Self::extract_string_zc(&elements[1])?))
                     }
                     _ => Ok(Command::Unknown(cmd_name)),
                 }
@@ -709,20 +886,30 @@ impl Command {
     pub fn is_read_only(&self) -> bool {
         matches!(self,
             Command::Get(_) |
+            Command::StrLen(_) |
             Command::MGet(_) |
             Command::Exists(_) |
             Command::TypeOf(_) |
             Command::Keys(_) |
             Command::Ttl(_) |
             Command::Pttl(_) |
+            Command::LLen(_) |
+            Command::LIndex(_, _) |
+            Command::LRange(_, _, _) |
             Command::SMembers(_) |
             Command::SIsMember(_, _) |
+            Command::SCard(_) |
             Command::HGet(_, _) |
             Command::HGetAll(_) |
-            Command::LRange(_, _, _) |
+            Command::HKeys(_) |
+            Command::HVals(_) |
+            Command::HLen(_) |
+            Command::HExists(_, _) |
             Command::ZRange(_, _, _) |
             Command::ZRevRange(_, _, _, _) |
             Command::ZScore(_, _) |
+            Command::ZRank(_, _) |
+            Command::ZCard(_) |
             Command::Info |
             Command::Ping
         )
@@ -737,12 +924,17 @@ impl Command {
             Command::Ttl(k) | Command::Pttl(k) | Command::Persist(k) |
             Command::Incr(k) | Command::Decr(k) | Command::IncrBy(k, _) |
             Command::DecrBy(k, _) | Command::Append(k, _) | Command::GetSet(k, _) |
+            Command::StrLen(k) |
             Command::LPush(k, _) | Command::RPush(k, _) | Command::LPop(k) |
-            Command::RPop(k) | Command::LRange(k, _, _) | Command::SAdd(k, _) |
-            Command::SMembers(k) | Command::SIsMember(k, _) | Command::HSet(k, _) |
-            Command::HGet(k, _) | Command::HGetAll(k) | Command::HIncrBy(k, _, _) |
-            Command::ZAdd(k, _) | Command::ZRange(k, _, _) | Command::ZRevRange(k, _, _, _) |
-            Command::ZScore(k, _) => Some(k.as_str()),
+            Command::RPop(k) | Command::LLen(k) | Command::LIndex(k, _) | Command::LRange(k, _, _) |
+            Command::SAdd(k, _) | Command::SRem(k, _) | Command::SMembers(k) |
+            Command::SIsMember(k, _) | Command::SCard(k) |
+            Command::HSet(k, _) | Command::HGet(k, _) | Command::HDel(k, _) |
+            Command::HGetAll(k) | Command::HKeys(k) | Command::HVals(k) |
+            Command::HLen(k) | Command::HExists(k, _) | Command::HIncrBy(k, _, _) |
+            Command::ZAdd(k, _) | Command::ZRem(k, _) | Command::ZRange(k, _, _) |
+            Command::ZRevRange(k, _, _, _) | Command::ZScore(k, _) |
+            Command::ZRank(k, _) | Command::ZCard(k) => Some(k.as_str()),
             Command::Exists(keys) => keys.first().map(|s| s.as_str()),
             Command::MGet(keys) => keys.first().map(|s| s.as_str()),
             Command::MSet(pairs) => pairs.first().map(|(k, _)| k.as_str()),
@@ -760,6 +952,16 @@ impl Command {
             Command::Set(_, _) => "SET",
             Command::SetEx(_, _, _) => "SETEX",
             Command::SetNx(_, _) => "SETNX",
+            Command::Append(_, _) => "APPEND",
+            Command::GetSet(_, _) => "GETSET",
+            Command::StrLen(_) => "STRLEN",
+            Command::MGet(_) => "MGET",
+            Command::MSet(_) => "MSET",
+            Command::BatchSet(_) => "BATCHSET",
+            Command::Incr(_) => "INCR",
+            Command::Decr(_) => "DECR",
+            Command::IncrBy(_, _) => "INCRBY",
+            Command::DecrBy(_, _) => "DECRBY",
             Command::Del(_) => "DEL",
             Command::Exists(_) => "EXISTS",
             Command::TypeOf(_) => "TYPE",
@@ -772,31 +974,34 @@ impl Command {
             Command::Ttl(_) => "TTL",
             Command::Pttl(_) => "PTTL",
             Command::Persist(_) => "PERSIST",
-            Command::Incr(_) => "INCR",
-            Command::Decr(_) => "DECR",
-            Command::IncrBy(_, _) => "INCRBY",
-            Command::DecrBy(_, _) => "DECRBY",
-            Command::Append(_, _) => "APPEND",
-            Command::GetSet(_, _) => "GETSET",
-            Command::MGet(_) => "MGET",
-            Command::MSet(_) => "MSET",
-            Command::BatchSet(_) => "BATCHSET",
             Command::LPush(_, _) => "LPUSH",
             Command::RPush(_, _) => "RPUSH",
             Command::LPop(_) => "LPOP",
             Command::RPop(_) => "RPOP",
+            Command::LLen(_) => "LLEN",
+            Command::LIndex(_, _) => "LINDEX",
             Command::LRange(_, _, _) => "LRANGE",
             Command::SAdd(_, _) => "SADD",
+            Command::SRem(_, _) => "SREM",
             Command::SMembers(_) => "SMEMBERS",
             Command::SIsMember(_, _) => "SISMEMBER",
+            Command::SCard(_) => "SCARD",
             Command::HSet(_, _) => "HSET",
             Command::HGet(_, _) => "HGET",
+            Command::HDel(_, _) => "HDEL",
             Command::HGetAll(_) => "HGETALL",
+            Command::HKeys(_) => "HKEYS",
+            Command::HVals(_) => "HVALS",
+            Command::HLen(_) => "HLEN",
+            Command::HExists(_, _) => "HEXISTS",
             Command::HIncrBy(_, _, _) => "HINCRBY",
             Command::ZAdd(_, _) => "ZADD",
+            Command::ZRem(_, _) => "ZREM",
             Command::ZRange(_, _, _) => "ZRANGE",
             Command::ZRevRange(_, _, _, _) => "ZREVRANGE",
             Command::ZScore(_, _) => "ZSCORE",
+            Command::ZRank(_, _) => "ZRANK",
+            Command::ZCard(_) => "ZCARD",
             Command::Info => "INFO",
             Command::Ping => "PING",
             Command::Unknown(_) => "UNKNOWN",
@@ -1495,7 +1700,171 @@ impl CommandExecutor {
                     None => RespValue::BulkString(None),
                 }
             }
-            
+
+            // === NEW COMMANDS ===
+
+            Command::StrLen(key) => {
+                match self.get_value(key) {
+                    Some(Value::String(s)) => RespValue::Integer(s.len() as i64),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::LLen(key) => {
+                match self.get_value(key) {
+                    Some(Value::List(l)) => RespValue::Integer(l.len() as i64),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::LIndex(key, index) => {
+                match self.get_value(key) {
+                    Some(Value::List(l)) => {
+                        let len = l.len() as isize;
+                        let actual_index = if *index < 0 {
+                            (len + *index).max(0) as usize
+                        } else {
+                            (*index).min(len - 1) as usize
+                        };
+                        if actual_index < l.len() {
+                            let range = l.range(actual_index as isize, actual_index as isize);
+                            if let Some(item) = range.first() {
+                                RespValue::BulkString(Some(item.as_bytes().to_vec()))
+                            } else {
+                                RespValue::BulkString(None)
+                            }
+                        } else {
+                            RespValue::BulkString(None)
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::BulkString(None),
+                }
+            }
+
+            Command::SRem(key, members) => {
+                match self.get_value_mut(key) {
+                    Some(Value::Set(s)) => {
+                        let mut removed = 0i64;
+                        for member in members {
+                            if s.remove(member) {
+                                removed += 1;
+                            }
+                        }
+                        RespValue::Integer(removed)
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::SCard(key) => {
+                match self.get_value(key) {
+                    Some(Value::Set(s)) => RespValue::Integer(s.len() as i64),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::HDel(key, fields) => {
+                match self.get_value_mut(key) {
+                    Some(Value::Hash(h)) => {
+                        let mut deleted = 0i64;
+                        for field in fields {
+                            if h.delete(field) {
+                                deleted += 1;
+                            }
+                        }
+                        RespValue::Integer(deleted)
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::HKeys(key) => {
+                match self.get_value(key) {
+                    Some(Value::Hash(h)) => {
+                        let keys: Vec<RespValue> = h.keys()
+                            .iter()
+                            .map(|k| RespValue::BulkString(Some(k.as_bytes().to_vec())))
+                            .collect();
+                        RespValue::Array(Some(keys))
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Array(Some(Vec::new())),
+                }
+            }
+
+            Command::HVals(key) => {
+                match self.get_value(key) {
+                    Some(Value::Hash(h)) => {
+                        let vals: Vec<RespValue> = h.values()
+                            .iter()
+                            .map(|v| RespValue::BulkString(Some(v.as_bytes().to_vec())))
+                            .collect();
+                        RespValue::Array(Some(vals))
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Array(Some(Vec::new())),
+                }
+            }
+
+            Command::HLen(key) => {
+                match self.get_value(key) {
+                    Some(Value::Hash(h)) => RespValue::Integer(h.len() as i64),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::HExists(key, field) => {
+                match self.get_value(key) {
+                    Some(Value::Hash(h)) => RespValue::Integer(if h.exists(field) { 1 } else { 0 }),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::ZRem(key, members) => {
+                match self.get_value_mut(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        let mut removed = 0i64;
+                        for member in members {
+                            if zs.remove(member) {
+                                removed += 1;
+                            }
+                        }
+                        RespValue::Integer(removed)
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
+            Command::ZRank(key, member) => {
+                match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => {
+                        match zs.rank(member) {
+                            Some(rank) => RespValue::Integer(rank as i64),
+                            None => RespValue::BulkString(None),
+                        }
+                    }
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::BulkString(None),
+                }
+            }
+
+            Command::ZCard(key) => {
+                match self.get_value(key) {
+                    Some(Value::SortedSet(zs)) => RespValue::Integer(zs.len() as i64),
+                    Some(_) => RespValue::Error("WRONGTYPE Operation against a key holding the wrong kind of value".to_string()),
+                    None => RespValue::Integer(0),
+                }
+            }
+
             Command::Unknown(cmd) => {
                 RespValue::Error(format!("ERR unknown command '{}'", cmd))
             }
