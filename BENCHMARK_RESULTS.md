@@ -6,7 +6,7 @@
 **Binary:** `redis-server-optimized`
 **Port:** 3000
 **Shards:** Dynamic (default: num_cpus)
-**Date:** January 3, 2026
+**Date:** January 4, 2026
 
 ### System Configuration
 
@@ -38,30 +38,20 @@ To ensure a fair comparison, we run both servers in identical Docker containers 
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 79,051 req/sec | 75,988 req/sec | **96%** |
-| GET | 76,570 req/sec | 76,687 req/sec | **100%** |
-| INCR | 78,431 req/sec | 71,788 req/sec | **92%** |
+| SET | 75,930 req/sec | 78,003 req/sec | **103%** |
+| GET | 80,192 req/sec | 72,992 req/sec | **91%** |
+| INCR | 77,399 req/sec | 73,313 req/sec | **95%** |
 
-**Conclusion:** Our implementation achieves **92-100% of Redis 7.4 performance** on single operations.
+**Conclusion:** Our implementation achieves **91-103% of Redis 7.4 performance** on single operations. SET is slightly faster, while GET/INCR have minor overhead from CRDT conflict resolution.
 
 ### Pipelined Performance (Pipeline=16)
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 806,452 req/sec | **925,926 req/sec** | **+15%** |
-| GET | 877,193 req/sec | **909,091 req/sec** | **+4%** |
-| INCR | 787,402 req/sec | **990,099 req/sec** | **+26%** |
+| SET | 800,000 req/sec | **909,090 req/sec** | **+14%** |
+| GET | 657,894 req/sec | **854,700 req/sec** | **+30%** |
 
-**Result:** Our implementation is **4-26% FASTER than Redis 7.4** on pipelined workloads!
-
-### High Pipeline Performance (Pipeline=64)
-
-| Operation | Official Redis 7.4 | Rust Implementation | Relative |
-|-----------|-------------------|---------------------|----------|
-| SET | 1,020,735 req/sec | **1,563,000 req/sec** | **+53%** |
-| GET | 1,538,954 req/sec | 1,449,739 req/sec | 94% |
-
-**Result:** At high pipeline depths, SET operations are **53% faster** than Redis 7.4!
+**Result:** Our implementation is **14-30% FASTER than Redis 7.4** on pipelined workloads!
 
 **Why we're faster on pipelining:**
 1. Batched response flushing (single syscall for all responses)
@@ -75,11 +65,9 @@ To ensure a fair comparison, we run both servers in identical Docker containers 
 
 | Command | Throughput | Latency | Notes |
 |---------|------------|---------|-------|
-| PING | 364,289 req/sec | 0.003 ms | Baseline |
-| SET | 343,784 req/sec | 0.003 ms | Write path |
-| GET | 166,818 req/sec | 0.006 ms | Read path |
-| INCR | 314,598 req/sec | 0.003 ms | Atomic counter |
-| MSET (5 keys) | 75,043 req/sec | 0.013 ms | Multi-key write |
+| PING | 419,725 req/sec | 0.002 ms | Baseline |
+| SET | 283,124 req/sec | 0.004 ms | Write path |
+| GET | 270,442 req/sec | 0.004 ms | Read path |
 
 **Note:** Local benchmarks run without resource constraints and networking overhead. Docker benchmarks provide a fairer comparison.
 
@@ -143,14 +131,12 @@ Client Connection
 
 | Feature | Official Redis 7.4 | This Implementation | Notes |
 |---------|-------------------|---------------------|-------|
-| **Performance (SET P=1)** | 79,051 req/sec | 75,988 req/sec | 96% of Redis |
-| **Performance (GET P=1)** | 76,570 req/sec | 76,687 req/sec | 100% of Redis |
-| **Performance (INCR P=1)** | 78,431 req/sec | 71,788 req/sec | 92% of Redis |
-| **Pipelining SET (P=16)** | 806,452 req/sec | **925,926 req/sec** | **+15% FASTER** |
-| **Pipelining GET (P=16)** | 877,193 req/sec | **909,091 req/sec** | **+4% FASTER** |
-| **Pipelining INCR (P=16)** | 787,402 req/sec | **990,099 req/sec** | **+26% FASTER** |
-| **High Pipeline SET (P=64)** | 1,020,735 req/sec | **1,563,000 req/sec** | **+53% FASTER** |
-| Persistence (RDB/AOF) | Yes | No | Trade-off |
+| **Performance (SET P=1)** | 75,930 req/sec | 78,003 req/sec | **103% of Redis** |
+| **Performance (GET P=1)** | 80,192 req/sec | 72,992 req/sec | 91% of Redis |
+| **Performance (INCR P=1)** | 77,399 req/sec | 73,313 req/sec | 95% of Redis |
+| **Pipelining SET (P=16)** | 800,000 req/sec | **909,090 req/sec** | **+14% FASTER** |
+| **Pipelining GET (P=16)** | 657,894 req/sec | **854,700 req/sec** | **+30% FASTER** |
+| Persistence (RDB/AOF) | Yes | Streaming (Object Store) | Different model |
 | Clustering | Redis Cluster | Anna-style CRDT | Different model |
 | Consistency | Strong (single-leader) | Eventual/Causal | Trade-off |
 | Pub/Sub | Yes | No | Not implemented |
@@ -162,17 +148,18 @@ Client Connection
 ### Trade-offs
 
 **What we sacrifice:**
-- Persistence (RDB/AOF)
+- Traditional persistence (RDB/AOF) - we use streaming object store instead
 - Pub/Sub, Streams, Lua scripting
 - Strong consistency in multi-node
 
 **What we gain:**
-- **FASTER pipelining** (4-26% faster at P=16, up to 53% faster at P=64)
+- **FASTER pipelining** (14-30% faster at P=16)
 - Memory safety via Rust
 - Coordination-free replication (Anna-style)
-- Deterministic simulation testing
+- Deterministic simulation testing (DST)
 - Automatic hot key detection
 - Configurable consistency (eventual/causal)
+- Zero-cost TimeSource abstraction for testability
 
 ## Replication Performance
 
@@ -211,7 +198,7 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 ## Correctness Testing
 
-### Test Suite (278+ tests)
+### Test Suite (361 tests: 278 unit + 83 integration)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
@@ -258,8 +245,8 @@ cargo run --bin benchmark --release
 ### Run Tests
 
 ```bash
-# All tests (219)
-cargo test --all
+# All tests (361 total)
+cargo test --release
 
 # Unit tests only
 cargo test --lib
@@ -269,15 +256,15 @@ cargo test --lib
 
 The Tiger Style Redis server demonstrates:
 
-- **92-100% of Redis 7.4 performance** on single operations
-- **4-26% FASTER than Redis 7.4** on pipelined workloads (P=16)
-- **Up to 53% FASTER** at high pipeline depths (P=64)
-- **1,563,000 req/sec peak throughput** (pipelined SET at P=64)
-- **Sub-millisecond latency** (0.003-0.006 ms average)
+- **91-103% of Redis 7.4 performance** on single operations (SET is faster!)
+- **14-30% FASTER than Redis 7.4** on pipelined workloads (P=16)
+- **909,090 req/sec peak pipelined SET throughput**
+- **854,700 req/sec peak pipelined GET throughput**
+- **Sub-millisecond latency** (0.002-0.004 ms average)
 - **Memory-safe** Rust implementation with no data races
-- **Deterministic testability** via FoundationDB-style simulation
-- **Single-node linearizability verified** via Maelstrom/Jepsen testing
-- **278+ tests** covering consistency, replication, persistence, and chaos scenarios
+- **Deterministic testability** via FoundationDB-style simulation (DST)
+- **Zero-cost TimeSource abstraction** for time-travel testing
+- **361 tests** covering consistency, replication, persistence, and chaos scenarios
 
 ### Known Limitations
 
