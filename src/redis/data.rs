@@ -8,14 +8,64 @@ pub struct SDS {
 }
 
 impl SDS {
+    /// VOPR: Verify all invariants hold for this SDS
+    #[cfg(debug_assertions)]
+    fn verify_invariants(&self) {
+        // Invariant 1: len() must equal data.len()
+        debug_assert_eq!(
+            self.len(),
+            self.data.len(),
+            "Invariant violated: len() must equal data.len()"
+        );
+
+        // Invariant 2: is_empty() must be consistent with data.is_empty()
+        debug_assert_eq!(
+            self.is_empty(),
+            self.data.is_empty(),
+            "Invariant violated: is_empty() must equal data.is_empty()"
+        );
+
+        // Invariant 3: is_empty() iff len() == 0
+        debug_assert_eq!(
+            self.is_empty(),
+            self.len() == 0,
+            "Invariant violated: is_empty() must equal len() == 0"
+        );
+
+        // Invariant 4: as_bytes() must return data slice
+        debug_assert_eq!(
+            self.as_bytes().len(),
+            self.data.len(),
+            "Invariant violated: as_bytes().len() must equal data.len()"
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    fn verify_invariants(&self) {}
+
     pub fn new(data: Vec<u8>) -> Self {
-        SDS { data }
+        let sds = SDS { data };
+
+        // TigerStyle: Postcondition - verify construction succeeded
+        sds.verify_invariants();
+        sds
     }
 
     pub fn from_str(s: &str) -> Self {
-        SDS {
+        let sds = SDS {
             data: s.as_bytes().to_vec(),
-        }
+        };
+
+        // TigerStyle: Postconditions
+        debug_assert_eq!(
+            sds.len(),
+            s.len(),
+            "Postcondition violated: SDS len must equal source string len"
+        );
+
+        sds.verify_invariants();
+        sds
     }
 
     pub fn len(&self) -> usize {
@@ -35,7 +85,25 @@ impl SDS {
     }
 
     pub fn append(&mut self, other: &SDS) {
+        // TigerStyle: Preconditions - capture state for postcondition check
+        #[cfg(debug_assertions)]
+        let pre_len = self.data.len();
+        #[cfg(debug_assertions)]
+        let other_len = other.data.len();
+
         self.data.extend_from_slice(&other.data);
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.data.len(),
+                pre_len + other_len,
+                "Postcondition violated: len must equal pre_len + other_len after append"
+            );
+        }
+
+        self.verify_invariants();
     }
 }
 
@@ -1223,5 +1291,105 @@ mod set_tests {
         set.remove(&SDS::from_str("member2"));
         assert!(set.is_empty());
         assert_eq!(set.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod sds_tests {
+    use super::*;
+
+    #[test]
+    fn test_sds_new() {
+        let data = vec![104, 101, 108, 108, 111]; // "hello"
+        let sds = SDS::new(data.clone());
+
+        assert_eq!(sds.len(), 5);
+        assert!(!sds.is_empty());
+        assert_eq!(sds.as_bytes(), &data);
+        assert_eq!(sds.to_string(), "hello");
+    }
+
+    #[test]
+    fn test_sds_from_str() {
+        let sds = SDS::from_str("world");
+
+        assert_eq!(sds.len(), 5);
+        assert!(!sds.is_empty());
+        assert_eq!(sds.as_bytes(), b"world");
+        assert_eq!(sds.to_string(), "world");
+    }
+
+    #[test]
+    fn test_sds_empty() {
+        let sds = SDS::from_str("");
+
+        assert_eq!(sds.len(), 0);
+        assert!(sds.is_empty());
+        assert_eq!(sds.as_bytes(), b"");
+        assert_eq!(sds.to_string(), "");
+    }
+
+    #[test]
+    fn test_sds_append() {
+        let mut sds = SDS::from_str("hello");
+        let other = SDS::from_str(" world");
+
+        sds.append(&other);
+
+        assert_eq!(sds.len(), 11);
+        assert_eq!(sds.to_string(), "hello world");
+    }
+
+    #[test]
+    fn test_sds_append_empty() {
+        let mut sds = SDS::from_str("test");
+        let empty = SDS::from_str("");
+
+        sds.append(&empty);
+
+        assert_eq!(sds.len(), 4);
+        assert_eq!(sds.to_string(), "test");
+    }
+
+    #[test]
+    fn test_sds_append_to_empty() {
+        let mut sds = SDS::from_str("");
+        let other = SDS::from_str("data");
+
+        sds.append(&other);
+
+        assert_eq!(sds.len(), 4);
+        assert_eq!(sds.to_string(), "data");
+    }
+
+    #[test]
+    fn test_sds_binary_data() {
+        // Test with binary data including null bytes
+        let data = vec![0, 1, 2, 0, 255];
+        let sds = SDS::new(data.clone());
+
+        assert_eq!(sds.len(), 5);
+        assert_eq!(sds.as_bytes(), &data);
+    }
+
+    #[test]
+    fn test_sds_invariants_maintained() {
+        // Test invariants through various operations
+        let mut sds = SDS::from_str("");
+        assert!(sds.is_empty());
+        assert_eq!(sds.len(), 0);
+
+        // Append to empty
+        sds.append(&SDS::from_str("a"));
+        assert!(!sds.is_empty());
+        assert_eq!(sds.len(), 1);
+
+        // Multiple appends
+        sds.append(&SDS::from_str("bc"));
+        assert_eq!(sds.len(), 3);
+
+        sds.append(&SDS::from_str("def"));
+        assert_eq!(sds.len(), 6);
+        assert_eq!(sds.to_string(), "abcdef");
     }
 }
