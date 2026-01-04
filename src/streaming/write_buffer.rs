@@ -19,6 +19,8 @@ pub enum WriteBufferError {
     ObjectStore(std::io::Error),
     /// Segment error
     Segment(crate::streaming::SegmentError),
+    /// Internal lock error (should never happen in practice)
+    LockError(String),
 }
 
 impl std::fmt::Display for WriteBufferError {
@@ -31,6 +33,7 @@ impl std::fmt::Display for WriteBufferError {
             WriteBufferError::Serialization(msg) => write!(f, "Serialization error: {}", msg),
             WriteBufferError::ObjectStore(e) => write!(f, "Object store error: {}", e),
             WriteBufferError::Segment(e) => write!(f, "Segment error: {}", e),
+            WriteBufferError::LockError(msg) => write!(f, "Lock error: {}", msg),
         }
     }
 }
@@ -126,11 +129,24 @@ impl<S: ObjectStore> WriteBuffer<S> {
         }
     }
 
+    /// TigerStyle: Acquire lock with graceful poison recovery
+    ///
+    /// If a previous holder panicked, we still return the data since
+    /// the WriteBufferInner state is still valid for our use case.
+    #[inline]
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, WriteBufferInner> {
+        self.inner.lock().unwrap_or_else(|poisoned| {
+            // Log the poison but recover the data - the buffer state is still usable
+            eprintln!("WriteBuffer: recovering from poisoned lock");
+            poisoned.into_inner()
+        })
+    }
+
     /// Push a delta to the buffer
     ///
     /// Returns error if backpressure threshold is exceeded
     pub fn push(&self, delta: ReplicationDelta) -> Result<(), WriteBufferError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock_inner();
 
         // Check backpressure before accepting
         if inner.estimated_bytes >= self.config.backpressure_threshold_bytes {
@@ -153,7 +169,7 @@ impl<S: ObjectStore> WriteBuffer<S> {
 
     /// Check if buffer should be flushed
     pub fn should_flush(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
 
         // Empty buffer - no flush needed
         if inner.deltas.is_empty() {
@@ -184,7 +200,7 @@ impl<S: ObjectStore> WriteBuffer<S> {
     pub async fn flush(&self) -> Result<Option<String>, WriteBufferError> {
         // Take deltas from buffer
         let (deltas, segment_id) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
 
             if inner.deltas.is_empty() {
                 return Ok(None);
@@ -219,7 +235,7 @@ impl<S: ObjectStore> WriteBuffer<S> {
 
         // Update stats
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.lock_inner();
             inner.stats.total_segments_written += 1;
             inner.stats.total_bytes_written += data_len as u64;
         }
@@ -229,19 +245,19 @@ impl<S: ObjectStore> WriteBuffer<S> {
 
     /// Get current statistics
     pub fn stats(&self) -> WriteBufferStats {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
         inner.stats.clone()
     }
 
     /// Get number of pending deltas
     pub fn pending_count(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
         inner.deltas.len()
     }
 
     /// Get estimated pending bytes
     pub fn pending_bytes(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock_inner();
         inner.estimated_bytes
     }
 }

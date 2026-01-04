@@ -215,9 +215,10 @@ impl ShardedActorState {
             .max(config.min_shards)
             .min(config.max_shards);
 
+        // TigerStyle: Handle system clock edge cases gracefully
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("System time before UNIX epoch")
+            .unwrap_or_default()
             .as_secs() as i64;
 
         let shards: Vec<ShardHandle> = (0..num_shards)
@@ -365,7 +366,8 @@ impl ShardedActorState {
 
     #[inline]
     fn get_current_virtual_time(&self) -> VirtualTime {
-        let elapsed = self.start_time.elapsed().expect("System time went backwards");
+        // TigerStyle: Handle system clock adjustments gracefully (clock may go backwards on NTP sync)
+        let elapsed = self.start_time.elapsed().unwrap_or_default();
         VirtualTime::from_millis(elapsed.as_millis() as u64)
     }
 
