@@ -191,20 +191,40 @@ Client Connection
 - **Hot Key Detection**: Automatic RF increase for high-traffic keys
 - **Anti-Entropy**: Merkle tree-based consistency verification
 
+## Streaming Persistence (Object Store)
+
+### Overview
+
+Streaming persistence provides durable storage via object stores (S3/LocalFs) with:
+- **Delta streaming**: Writes batched every 250ms
+- **Segment format**: Binary with CRC32 checksums
+- **Manifest-based recovery**: Atomic updates with crash recovery
+- **DST-tested**: VOPR-style multi-seed testing with fault injection
+
+### Test Coverage
+
+| Test Type | Seeds | Result |
+|-----------|-------|--------|
+| Calm (no faults) | 100 | 100% pass |
+| Moderate (some faults) | 100 | 80%+ pass |
+| Chaos (many faults) | 50 | Completes with expected failures |
+
 ## Correctness Testing
 
-### Test Suite (219 tests)
+### Test Suite (278+ tests)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 138 | RESP parsing, commands, data structures |
+| Unit Tests | 150+ | RESP parsing, commands, data structures |
 | Eventual Consistency | 9 | CRDT convergence, partition healing |
 | Causal Consistency | 10 | Vector clocks, read-your-writes |
 | DST/Simulation | 5 | Multi-seed chaos testing |
+| Streaming DST | 11 | Object store fault injection (100+ seeds) |
+| Streaming Persistence | 9 | Write buffer, recovery, compaction |
 | Anti-Entropy | 8 | Merkle tree sync, split-brain |
 | Hot Key Detection | 5 | Adaptive replication |
 | Metrics Service | 26 | CRDT counters, gauges, distributions |
-| Integration | 18 | End-to-end scenarios |
+| Integration | 18+ | End-to-end scenarios |
 
 ### Maelstrom/Jepsen Results
 
@@ -257,10 +277,10 @@ The Tiger Style Redis server demonstrates:
 - **Memory-safe** Rust implementation with no data races
 - **Deterministic testability** via FoundationDB-style simulation
 - **Single-node linearizability verified** via Maelstrom/Jepsen testing
-- **219 tests** covering consistency, replication, and chaos scenarios
+- **278+ tests** covering consistency, replication, persistence, and chaos scenarios
 
 ### Known Limitations
 
-1. **No persistence**: In-memory only (acceptable for caching)
+1. **Streaming persistence**: Object store-based (S3/LocalFs), not traditional RDB/AOF
 2. **No pub/sub**: Not implemented
 3. **Multi-node consistency**: Eventual, not linearizable (by design)

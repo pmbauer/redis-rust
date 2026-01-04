@@ -164,6 +164,71 @@ async fn bridge(rx: Receiver<Delta>, actor: ActorHandle) {
 3. **Zero-copy where possible**: Use `Bytes` for large data transfers
 4. **Profile before optimizing**: Use `cargo flamegraph`
 
+## Commit Requirements
+
+**Every commit must be fully tested and documented:**
+
+### Pre-Commit Checklist
+
+1. **Full Test Suite**: Run `cargo test --release` - all tests must pass
+2. **DST Tests**: Run streaming and simulator DST tests with multiple seeds
+3. **Benchmarks**: Run `cargo run --release --bin benchmark` if performance-related
+4. **Documentation**: Update benchmark results in `BENCHMARK_RESULTS.md` if metrics change
+
+### Commit Workflow
+
+```bash
+# 1. Run full test suite
+cargo test --release
+
+# 2. Run DST batch tests (if modifying streaming/persistence)
+cargo test streaming_dst --release
+
+# 3. Run Maelstrom linearizability tests (if modifying replication)
+./maelstrom/maelstrom test -w lin-kv --bin ./target/release/maelstrom_kv_replicated \
+    --node-count 3 --time-limit 60 --rate 100
+
+# 4. Run benchmarks (if performance-related changes)
+cargo run --release --bin quick_benchmark
+
+# 5. Update BENCHMARK_RESULTS.md with new numbers
+
+# 6. Commit with descriptive message
+git commit -m "Description of changes
+
+- What was added/changed
+- Test results summary
+- Benchmark comparison (if applicable)"
+```
+
+### What Must Be Updated
+
+| Change Type | Required Updates |
+|-------------|-----------------|
+| New feature | Tests, README feature list |
+| Performance change | BENCHMARK_RESULTS.md, PERFORMANCE_COMPARISON.md |
+| Bug fix | Regression test |
+| Replication change | Maelstrom test run |
+| Streaming change | DST tests with fault injection |
+
+### Benchmark Documentation Format
+
+When updating `BENCHMARK_RESULTS.md`, include:
+```markdown
+## [Date] - [Change Description]
+
+### Test Configuration
+- Hardware: [CPU, RAM]
+- Rust version: [version]
+- Build: release
+
+### Results
+| Operation | Before | After | Change |
+|-----------|--------|-------|--------|
+| SET       | X ops/s | Y ops/s | +Z% |
+| GET       | X ops/s | Y ops/s | +Z% |
+```
+
 ## Dependencies
 
 Core dependencies and their purposes:

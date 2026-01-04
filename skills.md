@@ -384,3 +384,86 @@ impl ManifestManager {
     }
 }
 ```
+
+---
+
+## Skill: Commit Verification
+
+### When to Use
+Before every commit to ensure code quality and documentation are maintained.
+
+### Pre-Commit Checklist
+
+```bash
+#!/bin/bash
+# pre-commit.sh - Run before every commit
+
+set -e
+
+echo "=== Running full test suite ==="
+cargo test --release
+
+echo "=== Running DST tests ==="
+cargo test streaming_dst --release
+cargo test dst_batch --release
+
+echo "=== Building release binary ==="
+cargo build --release
+
+echo "=== Running quick benchmark ==="
+cargo run --release --bin quick_benchmark
+
+echo "=== All checks passed! ==="
+```
+
+### Benchmark Documentation
+
+After running benchmarks, update `BENCHMARK_RESULTS.md`:
+
+```markdown
+## [YYYY-MM-DD] - [Brief description of change]
+
+### Configuration
+- CPU: [model]
+- Memory: [size]
+- Rust: [version]
+
+### Results
+| Metric | Value | vs Previous |
+|--------|-------|-------------|
+| SET ops/sec | 150,000 | +5% |
+| GET ops/sec | 180,000 | +3% |
+| P99 latency | 1.2ms | -10% |
+
+### Notes
+- [Any relevant observations]
+```
+
+### Maelstrom Linearizability Verification
+
+For replication changes:
+
+```bash
+# Build the Maelstrom binary
+cargo build --release --bin maelstrom_kv_replicated
+
+# Run linearizability test
+./maelstrom/maelstrom test -w lin-kv \
+    --bin ./target/release/maelstrom_kv_replicated \
+    --node-count 3 \
+    --time-limit 60 \
+    --rate 100 \
+    --nemesis partition
+
+# Check results
+cat maelstrom/maelstrom/store/latest/jepsen.log | grep -E "(OK|FAIL)"
+```
+
+### Required Artifacts Per Change Type
+
+| Change | Tests | Benchmarks | Maelstrom | Docs |
+|--------|-------|------------|-----------|------|
+| Core redis commands | ✓ | ✓ | - | README |
+| Replication | ✓ | - | ✓ | - |
+| Streaming persistence | ✓ DST | - | - | - |
+| Performance optimization | ✓ | ✓ | - | BENCHMARK_RESULTS.md |
