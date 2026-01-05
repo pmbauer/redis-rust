@@ -6,9 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-use super::adaptive_replication::{AdaptiveConfig, AdaptiveReplicationManager};
-use super::load_balancer::{LoadBalancerConfig, ScalingDecision, ShardLoadBalancer, ShardMetrics};
-use parking_lot::RwLock;
+use super::adaptive_actor::{AdaptiveActor, AdaptiveActorConfig, AdaptiveActorHandle};
+use super::load_balancer::ScalingDecision;
 
 /// Configuration for dynamic sharding behavior
 #[derive(Clone, Debug)]
@@ -180,14 +179,6 @@ fn hash_key(key: &str, num_shards: usize) -> usize {
     idx
 }
 
-/// Shared state for adaptive components (accessed from multiple tasks)
-struct AdaptiveState {
-    /// Hot key detection and RF management
-    adaptive_manager: Option<AdaptiveReplicationManager>,
-    /// Load balancing and scaling decisions
-    load_balancer: Option<ShardLoadBalancer>,
-}
-
 /// Sharded actor state with configurable time source
 ///
 /// Generic over `T: TimeSource` for zero-cost abstraction:
@@ -202,8 +193,8 @@ pub struct ShardedActorState<T: TimeSource = ProductionTimeSource> {
     /// Time source for getting current time
     time_source: T,
     config: ShardConfig,
-    /// Adaptive components (protected by RwLock for concurrent access)
-    adaptive: Arc<RwLock<AdaptiveState>>,
+    /// Adaptive components via actor handle (no locks!)
+    adaptive_handle: Option<AdaptiveActorHandle>,
 }
 
 /// Production-specific constructors (use ProductionTimeSource)
@@ -247,22 +238,19 @@ impl<T: TimeSource> ShardedActorState<T> {
             })
             .collect();
 
-        // Initialize adaptive components if enabled
-        let adaptive_manager = if config.adaptive_replication {
-            Some(AdaptiveReplicationManager::new(AdaptiveConfig::default()))
-        } else {
-            None
-        };
-
-        let load_balancer = if config.auto_scale {
-            Some(ShardLoadBalancer::new(
+        // Spawn adaptive actor if any adaptive features are enabled
+        let adaptive_handle = if config.adaptive_replication || config.auto_scale {
+            Some(AdaptiveActor::spawn(AdaptiveActorConfig {
+                enable_hot_key_detection: config.adaptive_replication,
+                enable_load_balancing: config.auto_scale,
                 num_shards,
-                LoadBalancerConfig {
+                adaptive_config: Default::default(),
+                load_balancer_config: super::load_balancer::LoadBalancerConfig {
                     min_shards: config.min_shards,
                     max_shards: config.max_shards,
                     ..Default::default()
                 },
-            ))
+            }))
         } else {
             None
         };
@@ -273,10 +261,7 @@ impl<T: TimeSource> ShardedActorState<T> {
             start_millis,
             time_source,
             config,
-            adaptive: Arc::new(RwLock::new(AdaptiveState {
-                adaptive_manager,
-                load_balancer,
-            })),
+            adaptive_handle,
         }
     }
 
@@ -295,96 +280,91 @@ impl<T: TimeSource> ShardedActorState<T> {
         self.config.adaptive_replication || self.config.auto_scale
     }
 
-    /// Observe a key access for hot key detection
+    /// Observe a key access for hot key detection (fire-and-forget)
     ///
     /// Call this on every key access when adaptive replication is enabled.
+    /// This is non-blocking - sends to actor without waiting for response.
     #[inline]
     pub fn observe_access(&self, key: &str, is_write: bool) {
-        if !self.config.adaptive_replication {
-            return;
-        }
-
-        let now_ms = self.get_current_virtual_time().as_millis();
-        let mut adaptive = self.adaptive.write();
-        if let Some(ref mut manager) = adaptive.adaptive_manager {
-            manager.observe(key, is_write, now_ms);
+        if let Some(ref handle) = self.adaptive_handle {
+            let now_ms = self.get_current_virtual_time().as_millis();
+            handle.observe_access(key.to_string(), is_write, now_ms);
         }
     }
 
     /// Get the replication factor for a key (considers hot key status)
-    pub fn get_rf_for_key(&self, key: &str) -> u8 {
-        let adaptive = self.adaptive.read();
-        if let Some(ref manager) = adaptive.adaptive_manager {
-            manager.get_rf_for_key(key)
+    ///
+    /// Async because it queries the adaptive actor via message passing.
+    pub async fn get_rf_for_key(&self, key: &str) -> u8 {
+        if let Some(ref handle) = self.adaptive_handle {
+            handle.get_rf_for_key(key).await
         } else {
             3 // Default RF
         }
     }
 
     /// Get current hot keys (for debugging/monitoring)
-    pub fn get_hot_keys(&self) -> Vec<(String, f64)> {
-        let now_ms = self.get_current_virtual_time().as_millis();
-        let adaptive = self.adaptive.read();
-        if let Some(ref manager) = adaptive.adaptive_manager {
-            manager.get_top_hot_keys(10, now_ms)
+    ///
+    /// Async because it queries the adaptive actor via message passing.
+    pub async fn get_hot_keys(&self) -> Vec<(String, f64)> {
+        if let Some(ref handle) = self.adaptive_handle {
+            let now_ms = self.get_current_virtual_time().as_millis();
+            handle.get_hot_keys(10, now_ms).await
         } else {
             Vec::new()
         }
     }
 
     /// Check load balancer for scaling recommendations
-    pub fn check_scaling(&self) -> Option<ScalingDecision> {
-        let now_ms = self.get_current_virtual_time().as_millis();
-        let adaptive = self.adaptive.read();
-        if let Some(ref balancer) = adaptive.load_balancer {
-            let decision = balancer.analyze(now_ms);
-            if decision != ScalingDecision::NoChange {
-                return Some(decision);
-            }
+    ///
+    /// Async because it queries the adaptive actor via message passing.
+    pub async fn check_scaling(&self) -> Option<ScalingDecision> {
+        if let Some(ref handle) = self.adaptive_handle {
+            let now_ms = self.get_current_virtual_time().as_millis();
+            handle.check_scaling(now_ms).await
+        } else {
+            None
         }
-        None
     }
 
-    /// Update shard metrics for load balancing
+    /// Update shard metrics for load balancing (fire-and-forget)
+    ///
+    /// This is non-blocking - sends to actor without waiting for response.
     pub fn update_shard_metrics(&self, shard_id: usize, key_count: usize, ops_per_second: f64) {
-        let now_ms = self.get_current_virtual_time().as_millis();
-        let mut adaptive = self.adaptive.write();
-        if let Some(ref mut balancer) = adaptive.load_balancer {
-            balancer.update_metrics(shard_id, ShardMetrics {
-                shard_id,
-                key_count,
-                ops_per_second,
-                memory_bytes: 0,
-                last_update_ms: now_ms,
-            });
+        if let Some(ref handle) = self.adaptive_handle {
+            let now_ms = self.get_current_virtual_time().as_millis();
+            handle.update_shard_metrics(shard_id, key_count, ops_per_second, now_ms);
         }
     }
 
     /// Get adaptive statistics for INFO command
-    pub fn get_adaptive_info(&self) -> String {
-        let adaptive = self.adaptive.read();
+    ///
+    /// Async because it queries the adaptive actor via message passing.
+    pub async fn get_adaptive_info(&self) -> String {
         let mut info = String::new();
 
         info.push_str("# Adaptive\r\n");
         info.push_str(&format!("adaptive_replication:{}\r\n", self.config.adaptive_replication));
         info.push_str(&format!("auto_scale:{}\r\n", self.config.auto_scale));
 
-        if let Some(ref manager) = adaptive.adaptive_manager {
-            let stats = manager.stats();
-            info.push_str(&format!("hot_keys:{}\r\n", stats.current_hot_keys));
-            info.push_str(&format!("tracked_keys:{}\r\n", stats.tracked_keys));
-            info.push_str(&format!("total_promotions:{}\r\n", stats.total_promotions));
-            info.push_str(&format!("base_rf:{}\r\n", stats.base_rf));
-            info.push_str(&format!("hot_rf:{}\r\n", stats.hot_rf));
-        }
-
-        if let Some(ref balancer) = adaptive.load_balancer {
-            let stats = balancer.get_stats();
-            info.push_str(&format!("total_ops_sec:{:.0}\r\n", stats.total_ops_per_sec));
-            info.push_str(&format!("imbalance_ratio:{:.2}\r\n", stats.imbalance_ratio));
+        if let Some(ref handle) = self.adaptive_handle {
+            // Query actor for stats - this is message-based, no locks!
+            let actor_info = handle.get_info().await;
+            // The actor formats its own info, append it (skip header since we already added it)
+            for line in actor_info.lines() {
+                if !line.starts_with("# Adaptive") && !line.starts_with("adaptive_replication:") && !line.starts_with("auto_scale:") {
+                    info.push_str(line);
+                    info.push_str("\r\n");
+                }
+            }
         }
 
         info
+    }
+
+    /// Get the adaptive actor handle (for direct access if needed)
+    pub fn adaptive_handle(&self) -> Option<&AdaptiveActorHandle> {
+        self.adaptive_handle.as_ref()
     }
 
     /// Get current virtual time (elapsed since creation)
@@ -418,7 +398,7 @@ impl<T: TimeSource> ShardedActorState<T> {
             Command::Ping => RespValue::SimpleString("PONG".to_string()),
 
             Command::Info => {
-                let adaptive_info = self.get_adaptive_info();
+                let adaptive_info = self.get_adaptive_info().await;
                 let info = format!(
                     "# Server\r\n\
                      redis_mode:tiger_style\r\n\
