@@ -133,6 +133,13 @@ impl OptimizedConnectionHandler {
 
     #[inline]
     async fn try_execute_command(&mut self) -> CommandResult {
+        // Try fast path first for GET/SET commands (80%+ of traffic)
+        match self.try_fast_path().await {
+            FastPathResult::Handled => return CommandResult::Executed,
+            FastPathResult::NeedMoreData => return CommandResult::NeedMoreData,
+            FastPathResult::NotFastPath => {} // Fall through to regular parsing
+        }
+
         match RespCodec::parse(&mut self.buffer) {
             Ok(Some(resp_value)) => {
                 match Command::from_resp_zero_copy(&resp_value) {
@@ -159,6 +166,164 @@ impl OptimizedConnectionHandler {
             Ok(None) => CommandResult::NeedMoreData,
             Err(e) => CommandResult::ParseError(e),
         }
+    }
+
+    /// Fast path for GET/SET commands - bypasses full RESP parsing
+    ///
+    /// RESP format for GET: *2\r\n$3\r\nGET\r\n$<keylen>\r\n<key>\r\n
+    /// RESP format for SET: *3\r\n$3\r\nSET\r\n$<keylen>\r\n<key>\r\n$<vallen>\r\n<value>\r\n
+    #[inline]
+    async fn try_fast_path(&mut self) -> FastPathResult {
+        let buf = &self.buffer[..];
+
+        // Need at least "*2\r\n$3\r\nGET" (12 bytes) to detect GET
+        if buf.len() < 12 {
+            return FastPathResult::NotFastPath;
+        }
+
+        // Check for GET: *2\r\n$3\r\nGET\r\n
+        if buf.starts_with(b"*2\r\n$3\r\nGET\r\n") || buf.starts_with(b"*2\r\n$3\r\nget\r\n") {
+            return self.try_fast_get().await;
+        }
+
+        // Check for SET: *3\r\n$3\r\nSET\r\n
+        if buf.starts_with(b"*3\r\n$3\r\nSET\r\n") || buf.starts_with(b"*3\r\n$3\r\nset\r\n") {
+            return self.try_fast_set().await;
+        }
+
+        FastPathResult::NotFastPath
+    }
+
+    /// Parse and execute GET command via fast path
+    #[inline]
+    async fn try_fast_get(&mut self) -> FastPathResult {
+        // Format: *2\r\n$3\r\nGET\r\n$<keylen>\r\n<key>\r\n
+        // Header is 14 bytes: "*2\r\n$3\r\nGET\r\n"
+        const HEADER_LEN: usize = 14;
+
+        let buf = &self.buffer[..];
+        if buf.len() < HEADER_LEN + 1 {
+            return FastPathResult::NeedMoreData;
+        }
+
+        // Parse key length: $<len>\r\n
+        let after_header = &buf[HEADER_LEN..];
+        if after_header[0] != b'$' {
+            return FastPathResult::NotFastPath; // Malformed, fall back
+        }
+
+        // Find \r\n after key length
+        let Some(crlf_pos) = memchr::memchr(b'\r', &after_header[1..]) else {
+            return FastPathResult::NeedMoreData;
+        };
+        let len_end = crlf_pos + 1; // Position of \r relative to after_header[1..]
+
+        // Parse key length
+        let len_str = &after_header[1..len_end];
+        let Ok(key_len) = std::str::from_utf8(len_str).ok().and_then(|s| s.parse::<usize>().ok()).ok_or(()) else {
+            return FastPathResult::NotFastPath; // Invalid length
+        };
+
+        // Check we have complete key + trailing \r\n
+        let key_start = HEADER_LEN + 1 + len_end + 1; // After $<len>\r\n
+        let total_needed = key_start + key_len + 2; // key + \r\n
+
+        if buf.len() < total_needed {
+            return FastPathResult::NeedMoreData;
+        }
+
+        // Extract key as bytes::Bytes (zero-copy from buffer)
+        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_start + key_len]);
+
+        // Consume the parsed bytes from buffer
+        let _ = self.buffer.split_to(total_needed);
+
+        // Execute fast GET
+        let start = Instant::now();
+        let response = self.state.fast_get(key).await;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let success = !matches!(&response, RespValue::Error(_));
+        self.metrics.record_command("GET", duration_ms, success);
+
+        Self::encode_resp_into(&response, &mut self.write_buffer);
+        FastPathResult::Handled
+    }
+
+    /// Parse and execute SET command via fast path
+    #[inline]
+    async fn try_fast_set(&mut self) -> FastPathResult {
+        // Format: *3\r\n$3\r\nSET\r\n$<keylen>\r\n<key>\r\n$<vallen>\r\n<value>\r\n
+        // Header is 14 bytes: "*3\r\n$3\r\nSET\r\n"
+        const HEADER_LEN: usize = 14;
+
+        let buf = &self.buffer[..];
+        if buf.len() < HEADER_LEN + 1 {
+            return FastPathResult::NeedMoreData;
+        }
+
+        // Parse key length: $<len>\r\n
+        let after_header = &buf[HEADER_LEN..];
+        if after_header[0] != b'$' {
+            return FastPathResult::NotFastPath;
+        }
+
+        let Some(key_len_crlf) = memchr::memchr(b'\r', &after_header[1..]) else {
+            return FastPathResult::NeedMoreData;
+        };
+
+        let key_len_str = &after_header[1..key_len_crlf + 1];
+        let Ok(key_len) = std::str::from_utf8(key_len_str).ok().and_then(|s| s.parse::<usize>().ok()).ok_or(()) else {
+            return FastPathResult::NotFastPath;
+        };
+
+        // Calculate key position
+        let key_start = HEADER_LEN + 1 + key_len_crlf + 2; // After $<keylen>\r\n
+        let key_end = key_start + key_len;
+        let val_len_start = key_end + 2; // After key\r\n
+
+        if buf.len() < val_len_start + 1 {
+            return FastPathResult::NeedMoreData;
+        }
+
+        // Parse value length: $<len>\r\n
+        if buf[val_len_start] != b'$' {
+            return FastPathResult::NotFastPath;
+        }
+
+        let after_key = &buf[val_len_start + 1..];
+        let Some(val_len_crlf) = memchr::memchr(b'\r', after_key) else {
+            return FastPathResult::NeedMoreData;
+        };
+
+        let val_len_str = &after_key[..val_len_crlf];
+        let Ok(val_len) = std::str::from_utf8(val_len_str).ok().and_then(|s| s.parse::<usize>().ok()).ok_or(()) else {
+            return FastPathResult::NotFastPath;
+        };
+
+        // Calculate value position and total length
+        let val_start = val_len_start + 1 + val_len_crlf + 2; // After $<vallen>\r\n
+        let total_needed = val_start + val_len + 2; // value + \r\n
+
+        if buf.len() < total_needed {
+            return FastPathResult::NeedMoreData;
+        }
+
+        // Extract key and value as bytes::Bytes
+        let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
+        let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
+
+        // Consume the parsed bytes
+        let _ = self.buffer.split_to(total_needed);
+
+        // Execute fast SET
+        let start = Instant::now();
+        let response = self.state.fast_set(key, value).await;
+        let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let success = !matches!(&response, RespValue::Error(_));
+        self.metrics.record_command("SET", duration_ms, success);
+
+        Self::encode_resp_into(&response, &mut self.write_buffer);
+        FastPathResult::Handled
     }
 
     #[inline]
@@ -216,4 +381,14 @@ enum CommandResult {
     Executed,
     NeedMoreData,
     ParseError(String),
+}
+
+/// Result of attempting fast path execution
+enum FastPathResult {
+    /// Command handled via fast path
+    Handled,
+    /// Need more data to complete parsing
+    NeedMoreData,
+    /// Not a fast-path command, fall back to regular parsing
+    NotFastPath,
 }

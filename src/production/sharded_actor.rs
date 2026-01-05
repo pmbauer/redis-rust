@@ -77,6 +77,17 @@ pub enum ShardMessage {
         virtual_time: VirtualTime,
         response_tx: oneshot::Sender<usize>,
     },
+    /// Fast path for GET - avoids Command enum overhead
+    FastGet {
+        key: bytes::Bytes,
+        response_tx: oneshot::Sender<RespValue>,
+    },
+    /// Fast path for SET - avoids Command enum overhead
+    FastSet {
+        key: bytes::Bytes,
+        value: bytes::Bytes,
+        response_tx: oneshot::Sender<RespValue>,
+    },
 }
 
 pub struct ShardActor {
@@ -112,6 +123,18 @@ impl ShardActor {
                 ShardMessage::EvictExpired { virtual_time, response_tx } => {
                     let evicted = self.executor.evict_expired_direct(virtual_time);
                     let _ = response_tx.send(evicted);
+                }
+                ShardMessage::FastGet { key, response_tx } => {
+                    // Fast path: direct GET without Command enum overhead
+                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                    let response = self.executor.get_direct(key_str);
+                    let _ = response_tx.send(response);
+                }
+                ShardMessage::FastSet { key, value, response_tx } => {
+                    // Fast path: direct SET without Command enum overhead
+                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                    let response = self.executor.set_direct(key_str, &value);
+                    let _ = response_tx.send(response);
                 }
             }
         }
@@ -153,6 +176,36 @@ impl ShardHandle {
         let _ = self.tx.send(msg);
     }
 
+    /// Fast path GET - avoids Command enum allocation
+    #[inline]
+    pub async fn fast_get(&self, key: bytes::Bytes) -> RespValue {
+        let (response_tx, response_rx) = oneshot::channel();
+        let msg = ShardMessage::FastGet { key, response_tx };
+
+        if self.tx.send(msg).is_err() {
+            return RespValue::Error("ERR shard unavailable".to_string());
+        }
+
+        response_rx.await.unwrap_or_else(|_| {
+            RespValue::Error("ERR shard response failed".to_string())
+        })
+    }
+
+    /// Fast path SET - avoids Command enum allocation
+    #[inline]
+    pub async fn fast_set(&self, key: bytes::Bytes, value: bytes::Bytes) -> RespValue {
+        let (response_tx, response_rx) = oneshot::channel();
+        let msg = ShardMessage::FastSet { key, value, response_tx };
+
+        if self.tx.send(msg).is_err() {
+            return RespValue::Error("ERR shard unavailable".to_string());
+        }
+
+        response_rx.await.unwrap_or_else(|_| {
+            RespValue::Error("ERR shard response failed".to_string())
+        })
+    }
+
     #[inline]
     async fn evict_expired(&self, virtual_time: VirtualTime) -> usize {
         let (response_tx, response_rx) = oneshot::channel();
@@ -171,6 +224,17 @@ impl ShardHandle {
 
 #[inline]
 fn hash_key(key: &str, num_shards: usize) -> usize {
+    debug_assert!(num_shards > 0, "num_shards must be positive");
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let idx = (hasher.finish() as usize) % num_shards;
+    debug_assert!(idx < num_shards, "Hash produced invalid shard index");
+    idx
+}
+
+/// Fast path: hash key bytes directly without UTF-8 validation overhead
+#[inline]
+fn hash_key_bytes(key: &[u8], num_shards: usize) -> usize {
     debug_assert!(num_shards > 0, "num_shards must be positive");
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
@@ -391,6 +455,28 @@ impl<T: TimeSource> ShardedActorState<T> {
         total
     }
 
+    /// Fast path GET - bypasses Command enum for lower overhead
+    ///
+    /// Uses bytes::Bytes to avoid String allocation. The key is hashed
+    /// directly from bytes and routed to the appropriate shard.
+    #[inline]
+    pub async fn fast_get(&self, key: bytes::Bytes) -> RespValue {
+        let shard_idx = hash_key_bytes(&key, self.num_shards);
+        debug_assert!(shard_idx < self.shards.len(), "Shard index out of bounds");
+        self.shards[shard_idx].fast_get(key).await
+    }
+
+    /// Fast path SET - bypasses Command enum for lower overhead
+    ///
+    /// Uses bytes::Bytes for both key and value to minimize allocations.
+    /// The key is hashed directly from bytes and routed to the appropriate shard.
+    #[inline]
+    pub async fn fast_set(&self, key: bytes::Bytes, value: bytes::Bytes) -> RespValue {
+        let shard_idx = hash_key_bytes(&key, self.num_shards);
+        debug_assert!(shard_idx < self.shards.len(), "Shard index out of bounds");
+        self.shards[shard_idx].fast_set(key, value).await
+    }
+
     pub async fn execute(&self, cmd: &Command) -> RespValue {
         let virtual_time = self.get_current_virtual_time();
 
@@ -444,14 +530,36 @@ impl<T: TimeSource> ShardedActorState<T> {
             }
 
             Command::MGet(keys) => {
+                // Optimization: Group keys by shard to reduce actor messages (Abseil Tip #5)
                 let num_shards = self.num_shards;
-                let futures: Vec<_> = keys.iter().map(|key| {
+
+                // Build shard batches: (shard_idx, original_indices, keys)
+                let mut shard_batches: std::collections::HashMap<usize, (Vec<usize>, Vec<String>)> =
+                    std::collections::HashMap::new();
+                for (original_idx, key) in keys.iter().enumerate() {
                     let shard_idx = hash_key(key, num_shards);
-                    self.shards[shard_idx].execute(Command::Get(key.clone()), virtual_time)
+                    let entry = shard_batches.entry(shard_idx).or_insert_with(|| (Vec::new(), Vec::new()));
+                    entry.0.push(original_idx);
+                    entry.1.push(key.clone());
+                }
+
+                // Execute batched gets concurrently
+                let futures: Vec<_> = shard_batches.iter().map(|(&shard_idx, (_, batch_keys))| {
+                    self.shards[shard_idx].execute(Command::BatchGet(batch_keys.clone()), virtual_time)
                 }).collect();
 
-                // Execute all GET operations concurrently
-                let results = futures::future::join_all(futures).await;
+                let batch_results = futures::future::join_all(futures).await;
+
+                // Reconstruct results in original key order
+                let mut results = vec![RespValue::BulkString(None); keys.len()];
+                for ((_, (original_indices, _)), batch_result) in shard_batches.into_iter().zip(batch_results) {
+                    if let RespValue::Array(Some(values)) = batch_result {
+                        for (idx, value) in original_indices.into_iter().zip(values) {
+                            results[idx] = value;
+                        }
+                    }
+                }
+
                 RespValue::Array(Some(results))
             }
 
