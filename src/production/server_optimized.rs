@@ -29,10 +29,8 @@ impl OptimizedRedisServer {
 
         info!("Initialized Tiger Style Redis with {} shards (lock-free)", NUM_SHARDS);
 
-        let ttl_manager = TtlManagerActor::new(state.clone(), metrics.clone());
-        tokio::spawn(async move {
-            ttl_manager.run().await;
-        });
+        // Spawn TTL manager actor with shutdown handle
+        let _ttl_handle = TtlManagerActor::spawn(state.clone(), metrics.clone());
         info!("TTL manager started (100ms interval)");
 
         let listener = TcpListener::bind(&self.addr).await?;
