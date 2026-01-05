@@ -23,7 +23,7 @@ cargo run --bin redis-server-optimized --release
 # Connect with redis-cli
 redis-cli -p 3000
 
-# Run all tests (316 tests)
+# Run all tests (331+ tests)
 cargo test --all
 
 # Run benchmarks
@@ -38,17 +38,17 @@ Docker-based benchmark (2 CPUs, 1GB RAM per container, 50 clients, 100K requests
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 118,483 req/sec | 95,602 req/sec | 81% |
-| GET | 123,762 req/sec | 99,601 req/sec | 80% |
+| SET | 77,882 req/sec | 74,963 req/sec | **96%** |
+| GET | 79,618 req/sec | 74,239 req/sec | **93%** |
 
 ### Pipelined (Pipeline=16)
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 1,041,666 req/sec | **1,250,000 req/sec** | **120%** |
-| GET | 1,250,000 req/sec | **1,282,051 req/sec** | **103%** |
+| SET | 763,359 req/sec | **1,020,408 req/sec** | **+34%** |
+| GET | 854,701 req/sec | **980,392 req/sec** | **+15%** |
 
-Our implementation achieves **~80%** of Redis on single operations and **103-120% FASTER** on pipelined workloads!
+Our implementation achieves **~93-96%** of Redis on single operations and **15-34% FASTER** on pipelined workloads!
 
 See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for full details and methodology.
 
@@ -113,7 +113,7 @@ Node 1                    Node 2                    Node 3
 
 ## Testing
 
-### Test Suite (316 tests total)
+### Test Suite (331+ tests total)
 
 ```bash
 # Unit tests
@@ -127,6 +127,7 @@ cargo test --all
 - **Unit Tests** (150+): Core Redis commands, RESP parsing, data structures, VOPR invariants
 - **Eventual Consistency** (9): CRDT convergence, partition healing
 - **Causal Consistency** (10): Vector clocks, read-your-writes, happens-before
+- **CRDT DST** (15): Multi-seed CRDT convergence testing (100+ seeds)
 - **DST/Simulation** (5): Multi-seed chaos testing
 - **Streaming DST** (11): Object store fault injection, 100+ seeds
 - **Streaming Persistence** (9): Write buffer, recovery, compaction
@@ -180,8 +181,8 @@ cargo test --all
 
 | Feature | Official Redis 7.4 | This Implementation |
 |---------|-------------------|---------------------|
-| Performance (SET/GET) | Baseline | ~80% (single) / 103-120% (pipelined) |
-| Pipelining | Full support | **103-120% FASTER** |
+| Performance (SET/GET) | Baseline | ~93-96% (single) / +15-34% (pipelined) |
+| Pipelining | Full support | **15-34% FASTER** |
 | Persistence (RDB/AOF) | Yes | Yes (Streaming to Object Store) |
 | Clustering | Redis Cluster | Anna-style CRDT |
 | Consistency | Single-leader strong | Eventual/Causal |
@@ -243,7 +244,12 @@ Run fair comparison against official Redis:
 
 ```bash
 cd docker-benchmark
+
+# In-memory comparison (Redis vs Rust optimized)
 ./run-benchmarks.sh
+
+# Persistent comparison (Redis AOF vs Rust S3/MinIO)
+./run-persistent-benchmarks.sh
 ```
 
 ## Datadog Observability

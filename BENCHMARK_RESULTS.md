@@ -38,25 +38,66 @@ To ensure a fair comparison, we run both servers in identical Docker containers 
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 118,483 req/sec | 95,602 req/sec | **81%** |
-| GET | 123,762 req/sec | 99,601 req/sec | **80%** |
+| SET | 77,882 req/sec | 74,963 req/sec | **96%** |
+| GET | 79,618 req/sec | 74,239 req/sec | **93%** |
+| INCR | 78,740 req/sec | 71,429 req/sec | **91%** |
 
-**Conclusion:** Our implementation achieves **~80% of Redis 7.4 performance** on single operations. The gap is due to our actor-based architecture overhead for individual commands.
+**Conclusion:** Our implementation achieves **~93-96% of Redis 7.4 performance** on single operations.
 
 ### Pipelined Performance (Pipeline=16)
 
 | Operation | Official Redis 7.4 | Rust Implementation | Relative |
 |-----------|-------------------|---------------------|----------|
-| SET | 1,041,666 req/sec | **1,250,000 req/sec** | **+20%** |
-| GET | 1,250,000 req/sec | **1,282,051 req/sec** | **+3%** |
+| SET | 763,359 req/sec | **1,020,408 req/sec** | **+34%** |
+| GET | 854,701 req/sec | **980,392 req/sec** | **+15%** |
 
-**Result:** Our implementation is **3-20% FASTER than Redis 7.4** on pipelined workloads!
+**Result:** Our implementation is **15-34% FASTER than Redis 7.4** on pipelined workloads!
 
 **Why we're faster on pipelining:**
 1. Batched response flushing (single syscall for all responses)
 2. TCP_NODELAY enabled for lower latency
 3. Lock-free actor architecture handles concurrent requests efficiently
 4. Zero-copy RESP parsing with `bytes::Bytes`
+
+## Persistent Server Benchmark (Docker)
+
+Fair comparison between Redis 7.4 with AOF persistence vs Rust implementation with S3 streaming (MinIO).
+
+### Configuration
+
+| Setting | Value |
+|---------|-------|
+| CPU Limit | 2 cores per container |
+| Memory Limit | 1GB per container |
+| Requests | 50,000 |
+| Clients | 50 concurrent |
+| Redis Persistence | AOF with appendfsync=everysec |
+| Rust Persistence | S3 streaming to MinIO |
+
+### Non-Pipelined Performance (Pipeline=1)
+
+| Operation | Redis 7.4 AOF | Rust S3 (MinIO) | Relative |
+|-----------|---------------|-----------------|----------|
+| SET | 73,313 req/sec | 70,721 req/sec | **96%** |
+| GET | 70,621 req/sec | 72,674 req/sec | **103%** |
+| INCR | 74,962 req/sec | 74,404 req/sec | **99%** |
+
+**Conclusion:** Our S3-based persistence achieves **96-103% of Redis AOF performance** on single operations.
+
+### Pipelined Performance (Pipeline=16)
+
+| Operation | Redis 7.4 AOF | Rust S3 (MinIO) | Relative |
+|-----------|---------------|-----------------|----------|
+| SET | 480,769 req/sec | **675,675 req/sec** | **+41%** |
+| GET | 877,193 req/sec | **909,090 req/sec** | **+4%** |
+
+**Result:** Our S3-persistent implementation is **4-41% FASTER than Redis AOF** on pipelined workloads!
+
+**Why persistent writes are competitive:**
+1. Async delta streaming (writes don't block operations)
+2. Batched persistence (250ms write buffer)
+3. Lock-free actor architecture
+4. CRC32-checksummed binary segments
 
 ## Local Benchmark (Single Machine, No Resource Limits)
 
@@ -130,10 +171,10 @@ Client Connection
 
 | Feature | Official Redis 7.4 | This Implementation | Notes |
 |---------|-------------------|---------------------|-------|
-| **Performance (SET P=1)** | 118,483 req/sec | 95,602 req/sec | 81% of Redis |
-| **Performance (GET P=1)** | 123,762 req/sec | 99,601 req/sec | 80% of Redis |
-| **Pipelining SET (P=16)** | 1,041,666 req/sec | **1,250,000 req/sec** | **+20% FASTER** |
-| **Pipelining GET (P=16)** | 1,250,000 req/sec | **1,282,051 req/sec** | **+3% FASTER** |
+| **Performance (SET P=1)** | 77,882 req/sec | 74,963 req/sec | 96% of Redis |
+| **Performance (GET P=1)** | 79,618 req/sec | 74,239 req/sec | 93% of Redis |
+| **Pipelining SET (P=16)** | 763,359 req/sec | **1,020,408 req/sec** | **+34% FASTER** |
+| **Pipelining GET (P=16)** | 854,701 req/sec | **980,392 req/sec** | **+15% FASTER** |
 | Persistence (RDB/AOF) | Yes | Streaming (Object Store) | Different model |
 | Clustering | Redis Cluster | Anna-style CRDT | Different model |
 | Consistency | Strong (single-leader) | Eventual/Causal | Trade-off |
@@ -151,7 +192,7 @@ Client Connection
 - Strong consistency in multi-node
 
 **What we gain:**
-- **FASTER pipelining** (3-20% faster at P=16)
+- **FASTER pipelining** (15-34% faster at P=16)
 - Memory safety via Rust
 - Coordination-free replication (Anna-style)
 - Deterministic simulation testing (DST)
@@ -197,13 +238,14 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 ## Correctness Testing
 
-### Test Suite (316 tests total)
+### Test Suite (331+ tests total)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
 | Unit Tests | 150+ | RESP parsing, commands, data structures, VOPR invariants |
 | Eventual Consistency | 9 | CRDT convergence, partition healing |
 | Causal Consistency | 10 | Vector clocks, read-your-writes |
+| CRDT DST | 15 | Multi-seed CRDT convergence testing (100+ seeds) |
 | DST/Simulation | 5 | Multi-seed chaos testing |
 | Streaming DST | 11 | Object store fault injection (100+ seeds) |
 | Streaming Persistence | 9 | Write buffer, recovery, compaction |
@@ -228,7 +270,12 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 ```bash
 cd docker-benchmark
+
+# In-memory comparison (Redis vs Rust optimized)
 ./run-benchmarks.sh
+
+# Persistent comparison (Redis AOF vs Rust S3/MinIO)
+./run-persistent-benchmarks.sh
 ```
 
 ### Local Benchmark
@@ -255,15 +302,16 @@ cargo test --lib
 
 The Tiger Style Redis server demonstrates:
 
-- **~80% of Redis 7.4 performance** on single operations
-- **3-20% FASTER than Redis 7.4** on pipelined workloads (P=16)
-- **1,250,000 req/sec peak pipelined SET throughput**
-- **1,282,051 req/sec peak pipelined GET throughput**
+- **~93-96% of Redis 7.4 performance** on single operations
+- **15-34% FASTER than Redis 7.4** on pipelined workloads (P=16)
+- **1,020,408 req/sec peak pipelined SET throughput**
+- **980,392 req/sec peak pipelined GET throughput**
 - **Sub-millisecond latency** (0.002-0.004 ms average)
 - **Memory-safe** Rust implementation with no data races
 - **Deterministic testability** via FoundationDB-style simulation (DST)
 - **TigerStyle VOPR** invariant checking on all data structures
-- **316 tests** covering consistency, replication, persistence, and chaos scenarios
+- **331+ tests** covering consistency, replication, persistence, and chaos scenarios
+- **S3-persistent mode** competitive with Redis AOF (+4-41% on pipelined)
 
 ### Known Limitations
 
