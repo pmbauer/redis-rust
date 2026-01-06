@@ -15,6 +15,8 @@ An experimental, actor-based Redis-compatible cache server in Rust with distribu
 - **Anna KVS-Style Replication**: Configurable consistency (eventual, causal), coordination-free
 - **Hot Key Detection**: Adaptive replication for high-traffic keys
 - **Deterministic Simulation**: FoundationDB/TigerBeetle-style testing harness
+- **Redis Equivalence Testing**: Differential testing against real Redis (27 commands verified)
+- **Zipfian Workload Simulation**: Realistic hot/cold key access patterns
 - **Maelstrom/Jepsen Integration**: Formal linearizability testing (single-node verified)
 - **Datadog Observability**: Optional metrics, tracing, and logging via feature flag
 
@@ -27,7 +29,7 @@ cargo run --bin redis-server-optimized --release
 # Connect with redis-cli
 redis-cli -p 3000
 
-# Run all tests (331+ tests)
+# Run all tests (480+ tests)
 cargo test --all
 
 # Run benchmarks
@@ -117,7 +119,7 @@ Node 1                    Node 2                    Node 3
 
 ## Testing
 
-### Test Suite (331+ tests total)
+### Test Suite (480+ tests total)
 
 ```bash
 # Unit tests
@@ -125,18 +127,57 @@ cargo test --lib
 
 # All tests including integration
 cargo test --all
+
+# Redis equivalence testing (requires real Redis running on 6379)
+cargo test redis_equivalence --release -- --ignored
 ```
 
 **Test Categories:**
-- **Unit Tests** (150+): Core Redis commands, RESP parsing, data structures, VOPR invariants
+- **Unit Tests** (372+): Core Redis commands, RESP parsing, data structures, VOPR invariants
+- **Redis Equivalence** (27 commands): Differential testing against real Redis
 - **Eventual Consistency** (9): CRDT convergence, partition healing
 - **Causal Consistency** (10): Vector clocks, read-your-writes, happens-before
 - **CRDT DST** (15): Multi-seed CRDT convergence testing (100+ seeds)
-- **DST/Simulation** (5): Multi-seed chaos testing
+- **DST/Simulation** (5): Multi-seed chaos testing with Zipfian key distribution
 - **Streaming DST** (11): Object store fault injection, 100+ seeds
 - **Streaming Persistence** (9): Write buffer, recovery, compaction
 - **Anti-Entropy** (8): Merkle tree sync, split-brain recovery
 - **Hot Key Detection** (5): Adaptive replication, Zipfian workloads
+
+### Redis Equivalence Testing
+
+Differential testing compares our implementation against real Redis to ensure identical behavior:
+
+```bash
+# Start real Redis on default port
+docker run -d -p 6379:6379 redis:7-alpine
+
+# Start rust implementation
+REDIS_PORT=3000 cargo run --bin redis-server-optimized --release &
+
+# Run equivalence tests
+cargo test redis_equivalence --release -- --ignored
+```
+
+**27 core commands verified identical** including:
+- String operations (GET, SET, APPEND, STRLEN, GETRANGE)
+- Numeric operations (INCR, DECR, INCRBY, DECRBY)
+- Hash operations (HSET, HGET, HDEL, HGETALL, HINCRBY)
+- List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
+- Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
+- Sorted set operations (ZADD, ZSCORE, ZRANK, ZRANGE, ZCARD)
+- Key operations (DEL, EXISTS, TYPE, EXPIRE, TTL)
+
+### Zipfian Workload Simulation
+
+DST tests use Zipfian distribution for realistic hot/cold key access patterns:
+
+```rust
+// Top 10 keys receive ~40% of accesses (skew=1.0)
+KeyDistribution::Zipfian { num_keys: 100, skew: 1.0 }
+```
+
+This simulates real-world workloads where a small subset of keys receive disproportionate traffic.
 
 ### Maelstrom/Jepsen Tests
 
@@ -233,6 +274,7 @@ These could be added without architectural changes:
 | ACL/Auth | Yes | No |
 | Hot Key Handling | Manual | Automatic detection |
 | Deterministic Testing | No | Yes (DST framework) |
+| Differential Testing | N/A | Yes (27 commands vs Redis) |
 | Datadog Integration | Via plugin | Native (feature flag) |
 
 **Trade-offs**: We sacrifice some Redis features (pub/sub, Lua) in favor of coordination-free replication, streaming persistence to object stores (S3/local), and deterministic simulation testing.
@@ -271,12 +313,18 @@ src/
 │   ├── time.rs                      # VirtualTime
 │   ├── network.rs                   # Network fault simulation
 │   └── rng.rs                       # DeterministicRng, buggify()
-└── observability/                   # Datadog integration (optional)
-    ├── config.rs                    # Environment configuration
-    ├── metrics.rs                   # DogStatsD client
-    ├── recorder.rs                  # DST-compatible MetricsRecorder trait
-    ├── tracing_setup.rs             # OpenTelemetry + Datadog APM
-    └── spans.rs                     # Span helpers
+├── observability/                   # Datadog integration (optional)
+│   ├── config.rs                    # Environment configuration
+│   ├── metrics.rs                   # DogStatsD client
+│   ├── recorder.rs                  # DST-compatible MetricsRecorder trait
+│   ├── tracing_setup.rs             # OpenTelemetry + Datadog APM
+│   └── spans.rs                     # Span helpers
+└── simulator/
+    ├── dst_integration.rs           # DST with Zipfian distribution
+    └── ...
+
+tests/
+└── redis_equivalence_test.rs        # Differential testing vs real Redis
 ```
 
 ## Docker Benchmarking

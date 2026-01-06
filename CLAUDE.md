@@ -29,6 +29,8 @@ Every new component must be:
 - Unit tests for pure logic
 - DST tests with fault injection for I/O components
 - Multiple seeds (minimum 10) for simulation tests
+- Redis equivalence tests for command behavior changes
+- Use Zipfian distribution (not uniform) for realistic workload tests
 
 ### 5. Design-by-Contract (TigerStyle Assertions)
 - State invariants must be checkable at any point
@@ -206,11 +208,33 @@ fn test_with_fault_injection() {
 - Test component interactions
 - Use real async runtime but simulated I/O
 
-### 4. Linearizability Tests (Jepsen-style)
+### 4. Redis Equivalence Tests (Differential Testing)
+Run commands against both real Redis and our implementation, compare responses:
+```bash
+# Start real Redis and our server
+docker run -d -p 6379:6379 redis:7-alpine
+REDIS_PORT=3000 cargo run --bin redis-server-optimized --release &
+
+# Run equivalence tests
+cargo test redis_equivalence --release -- --ignored
+```
+
+### 5. Linearizability Tests (Jepsen-style)
 - Use Maelstrom for distributed correctness
 - Test under network partitions
 - Verify consistency guarantees
 - Run: `./maelstrom/maelstrom test -w lin-kv --bin ./target/release/maelstrom_kv_replicated`
+
+### 6. Workload Realism (Zipfian Distribution)
+Use Zipfian distribution for key access patterns in DST tests:
+```rust
+// GOOD: Realistic hot/cold key pattern
+KeyDistribution::Zipfian { num_keys: 100, skew: 1.0 }
+
+// BAD: Uniform distribution (unrealistic)
+KeyDistribution::Uniform { num_keys: 100 }
+```
+With skew=1.0, top 10 keys receive ~40% of accesses (like real workloads).
 
 ## Key Files
 
@@ -218,8 +242,10 @@ fn test_with_fault_injection() {
 |------|---------|
 | `src/io/mod.rs` | I/O abstractions (Clock, Network, RNG) |
 | `src/simulator/` | DST harness and fault injection |
+| `src/simulator/dst_integration.rs` | DST with Zipfian distribution |
 | `src/streaming/simulated_store.rs` | Fault-injectable object store |
 | `src/buggify/` | Probabilistic fault injection |
+| `tests/redis_equivalence_test.rs` | Differential testing vs real Redis |
 
 ## Common Patterns
 
@@ -428,6 +454,7 @@ git commit -m "Description of changes
 | Bug fix | Regression test |
 | Replication change | Maelstrom test run |
 | Streaming change | DST tests with fault injection |
+| Command behavior change | Redis equivalence test |
 | Any Redis comparison | Docker benchmarks (NEVER local benchmarks) |
 
 ### Benchmark Documentation Format

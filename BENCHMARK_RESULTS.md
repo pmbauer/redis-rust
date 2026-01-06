@@ -260,19 +260,20 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 ## Correctness Testing
 
-### Test Suite (331+ tests total)
+### Test Suite (480+ tests total)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 150+ | RESP parsing, commands, data structures, VOPR invariants |
+| Unit Tests | 372+ | RESP parsing, commands, data structures, VOPR invariants |
+| Redis Equivalence | 27 | Differential testing vs real Redis (27 commands verified) |
 | Eventual Consistency | 9 | CRDT convergence, partition healing |
 | Causal Consistency | 10 | Vector clocks, read-your-writes |
-| CRDT DST | 15 | Multi-seed CRDT convergence testing (100+ seeds) |
-| DST/Simulation | 5 | Multi-seed chaos testing |
+| CRDT DST | 15 | Multi-seed CRDT convergence (100+ seeds, Zipfian distribution) |
+| DST/Simulation | 5 | Multi-seed chaos testing with Zipfian workloads |
 | Streaming DST | 11 | Object store fault injection (100+ seeds) |
 | Streaming Persistence | 9 | Write buffer, recovery, compaction |
 | Anti-Entropy | 8 | Merkle tree sync, split-brain |
-| Hot Key Detection | 5 | Adaptive replication |
+| Hot Key Detection | 5 | Adaptive replication, Zipfian workloads |
 | Metrics Service | 26 | CRDT counters, gauges, distributions |
 | Integration | 18+ | End-to-end scenarios |
 
@@ -313,11 +314,14 @@ cargo run --bin benchmark --release
 ### Run Tests
 
 ```bash
-# All tests (352 total)
+# All tests (480+ total)
 cargo test --release
 
 # Unit tests only
 cargo test --lib
+
+# Redis equivalence tests (requires real Redis on 6379)
+cargo test redis_equivalence --release -- --ignored
 ```
 
 ### Reproduction Commands
@@ -360,7 +364,9 @@ The Tiger Style Redis server demonstrates:
 - **Memory-safe** Rust implementation with no data races
 - **Deterministic testability** via FoundationDB-style simulation (DST)
 - **TigerStyle VOPR** invariant checking on all data structures
-- **331+ tests** covering consistency, replication, persistence, and chaos scenarios
+- **480+ tests** covering consistency, replication, persistence, and chaos scenarios
+- **Redis equivalence testing** - 27 commands verified identical to real Redis
+- **Zipfian workload simulation** for realistic hot/cold key patterns
 - **S3-persistent mode** competitive with Redis AOF (+4-41% on pipelined)
 
 ### macOS Docker Desktop Results (January 5, 2026)
