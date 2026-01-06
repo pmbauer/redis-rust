@@ -422,6 +422,98 @@ impl RedisList {
             .cloned()
             .collect()
     }
+
+    /// LINDEX - get element at index
+    pub fn get(&self, index: isize) -> Option<&SDS> {
+        let len = self.items.len() as isize;
+        let idx = if index < 0 { len + index } else { index };
+
+        if idx < 0 || idx >= len {
+            return None;
+        }
+
+        self.items.get(idx as usize)
+    }
+
+    /// LSET - set element at index (for LSET command)
+    pub fn set(&mut self, index: isize, value: SDS) -> Result<(), String> {
+        let len = self.items.len() as isize;
+
+        // TigerStyle: Preconditions
+        debug_assert!(len > 0, "Precondition: list must not be empty for LSET");
+
+        let idx = if index < 0 { len + index } else { index };
+
+        if idx < 0 || idx >= len {
+            return Err("ERR index out of range".to_string());
+        }
+
+        #[cfg(debug_assertions)]
+        let pre_len = self.items.len();
+
+        self.items[idx as usize] = value.clone();
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.items.len(),
+                pre_len,
+                "Postcondition violated: length must not change after LSET"
+            );
+            debug_assert_eq!(
+                self.items[idx as usize].to_string(),
+                value.to_string(),
+                "Postcondition violated: value must be set at index"
+            );
+        }
+
+        self.verify_invariants();
+        Ok(())
+    }
+
+    /// LTRIM - trim list to specified range
+    pub fn trim(&mut self, start: isize, stop: isize) {
+        let len = self.items.len() as isize;
+        if len == 0 {
+            return;
+        }
+
+        // Normalize indices
+        let s = if start < 0 { (len + start).max(0) } else { start.min(len) };
+        let e = if stop < 0 { (len + stop).max(-1) } else { stop.min(len - 1) };
+
+        if s > e || s >= len {
+            self.items.clear();
+            self.verify_invariants();
+            return;
+        }
+
+        // Keep only elements in range
+        let new_items: VecDeque<SDS> = self.items
+            .iter()
+            .skip(s as usize)
+            .take((e - s + 1) as usize)
+            .cloned()
+            .collect();
+
+        #[cfg(debug_assertions)]
+        let expected_len = (e - s + 1) as usize;
+
+        self.items = new_items;
+
+        // TigerStyle: Postconditions
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(
+                self.items.len(),
+                expected_len,
+                "Postcondition violated: length must equal trimmed range size"
+            );
+        }
+
+        self.verify_invariants();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -714,6 +806,11 @@ impl RedisHash {
             .map(|(k, v)| (SDS::from_str(k), v.clone()))
             .collect()
     }
+
+    /// Iterate over field-value pairs (for HSCAN)
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &SDS)> {
+        self.fields.iter()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -946,6 +1043,76 @@ impl RedisSortedSet {
             let cmp = w[0].1.partial_cmp(&w[1].1).unwrap_or(Ordering::Equal);
             cmp == Ordering::Less || (cmp == Ordering::Equal && w[0].0 <= w[1].0)
         })
+    }
+
+    /// Parse score bound (handles -inf, +inf, exclusive with parenthesis)
+    fn parse_score_bound(s: &str, _is_min: bool) -> Result<(f64, bool), String> {
+        let s = s.trim();
+        if s == "-inf" {
+            return Ok((f64::NEG_INFINITY, false));
+        }
+        if s == "+inf" || s == "inf" {
+            return Ok((f64::INFINITY, false));
+        }
+
+        let (exclusive, num_str) = if s.starts_with('(') {
+            (true, &s[1..])
+        } else {
+            (false, s)
+        };
+
+        let score = num_str.parse::<f64>()
+            .map_err(|_| "ERR min or max is not a float".to_string())?;
+
+        Ok((score, exclusive))
+    }
+
+    /// ZCOUNT - count elements in score range
+    pub fn count_in_range(&self, min: &str, max: &str) -> Result<usize, String> {
+        let (min_score, min_exclusive) = Self::parse_score_bound(min, true)?;
+        let (max_score, max_exclusive) = Self::parse_score_bound(max, false)?;
+
+        let count = self.sorted_members.iter()
+            .filter(|(_, score)| {
+                let above_min = if min_exclusive { *score > min_score } else { *score >= min_score };
+                let below_max = if max_exclusive { *score < max_score } else { *score <= max_score };
+                above_min && below_max
+            })
+            .count();
+
+        Ok(count)
+    }
+
+    /// ZRANGEBYSCORE - get elements by score range
+    pub fn range_by_score(&self, min: &str, max: &str, with_scores: bool, limit: Option<(isize, usize)>)
+        -> Result<Vec<(String, Option<f64>)>, String>
+    {
+        let (min_score, min_exclusive) = Self::parse_score_bound(min, true)?;
+        let (max_score, max_exclusive) = Self::parse_score_bound(max, false)?;
+
+        let mut results: Vec<_> = self.sorted_members.iter()
+            .filter(|(_, score)| {
+                let above_min = if min_exclusive { *score > min_score } else { *score >= min_score };
+                let below_max = if max_exclusive { *score < max_score } else { *score <= max_score };
+                above_min && below_max
+            })
+            .map(|(member, score)| {
+                (member.clone(), if with_scores { Some(*score) } else { None })
+            })
+            .collect();
+
+        // Apply LIMIT
+        if let Some((offset, count)) = limit {
+            let start = offset.max(0) as usize;
+            results = results.into_iter().skip(start).take(count).collect();
+        }
+
+        Ok(results)
+    }
+
+    /// Iterate over member-score pairs (for ZSCAN)
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &f64)> {
+        self.sorted_members.iter().map(|(m, s)| (m, s))
     }
 }
 

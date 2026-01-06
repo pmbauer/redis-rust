@@ -432,6 +432,25 @@ fn test_list_equivalence() {
     tester.test(&["LTRIM", "trimlist", "1", "3"]);
     tester.test(&["LRANGE", "trimlist", "0", "-1"]);
 
+    // RPOPLPUSH
+    tester.setup(&["DEL", "srclist", "dstlist"]);
+    tester.setup(&["RPUSH", "srclist", "a", "b", "c"]);
+    tester.test(&["RPOPLPUSH", "srclist", "dstlist"]);
+    tester.test(&["LRANGE", "srclist", "0", "-1"]);
+    tester.test(&["LRANGE", "dstlist", "0", "-1"]);
+    tester.test(&["RPOPLPUSH", "srclist", "dstlist"]);
+    tester.test(&["LRANGE", "dstlist", "0", "-1"]);
+
+    // LMOVE
+    tester.setup(&["DEL", "lmove_src", "lmove_dst"]);
+    tester.setup(&["RPUSH", "lmove_src", "one", "two", "three"]);
+    tester.test(&["LMOVE", "lmove_src", "lmove_dst", "RIGHT", "LEFT"]);
+    tester.test(&["LRANGE", "lmove_src", "0", "-1"]);
+    tester.test(&["LRANGE", "lmove_dst", "0", "-1"]);
+    tester.test(&["LMOVE", "lmove_src", "lmove_dst", "LEFT", "RIGHT"]);
+    tester.test(&["LRANGE", "lmove_src", "0", "-1"]);
+    tester.test(&["LRANGE", "lmove_dst", "0", "-1"]);
+
     tester.report();
     assert_eq!(tester.failed, 0, "Some list operations differed");
 }
@@ -708,6 +727,77 @@ fn test_key_operations_equivalence() {
 
     tester.report();
     assert_eq!(tester.failed, 0, "Some key operations differed");
+}
+
+/// Test SCAN operations
+#[test]
+#[ignore]
+fn test_scan_equivalence() {
+    let mut tester = DifferentialTester::new(6379, 3000)
+        .expect("Failed to connect to both servers");
+
+    println!("\n=== SCAN Operations ===");
+
+    tester.cleanup();
+
+    // Setup keys for SCAN
+    tester.setup(&["SET", "scan_key1", "v1"]);
+    tester.setup(&["SET", "scan_key2", "v2"]);
+    tester.setup(&["SET", "scan_key3", "v3"]);
+    tester.setup(&["SET", "other_key", "v4"]);
+
+    // SCAN with pattern
+    // Note: We can't directly compare SCAN results as cursor semantics differ
+    // Just verify it returns something reasonable
+    let redis_scan = exec_cmd(&mut tester.redis_conn, &["SCAN", "0", "MATCH", "scan_*", "COUNT", "100"]);
+    let rust_scan = exec_cmd(&mut tester.rust_conn, &["SCAN", "0", "MATCH", "scan_*", "COUNT", "100"]);
+
+    match (&redis_scan, &rust_scan) {
+        (Response::Bulk(r), Response::Bulk(u)) if r.len() >= 2 && u.len() >= 2 => {
+            // Second element should be the keys array
+            tester.passed += 1;
+            println!("  [PASS] SCAN 0 MATCH scan_* COUNT 100 (returned valid structure)");
+        }
+        _ => {
+            tester.failed += 1;
+            println!("  [FAIL] SCAN 0 MATCH scan_* COUNT 100\n    Redis: {:?}\n    Rust:  {:?}", redis_scan, rust_scan);
+        }
+    }
+
+    // HSCAN
+    tester.setup(&["HSET", "scan_hash", "field1", "v1", "field2", "v2", "field3", "v3"]);
+    let redis_hscan = exec_cmd(&mut tester.redis_conn, &["HSCAN", "scan_hash", "0", "COUNT", "100"]);
+    let rust_hscan = exec_cmd(&mut tester.rust_conn, &["HSCAN", "scan_hash", "0", "COUNT", "100"]);
+
+    match (&redis_hscan, &rust_hscan) {
+        (Response::Bulk(r), Response::Bulk(u)) if r.len() >= 2 && u.len() >= 2 => {
+            tester.passed += 1;
+            println!("  [PASS] HSCAN scan_hash 0 COUNT 100 (returned valid structure)");
+        }
+        _ => {
+            tester.failed += 1;
+            println!("  [FAIL] HSCAN scan_hash 0 COUNT 100\n    Redis: {:?}\n    Rust:  {:?}", redis_hscan, rust_hscan);
+        }
+    }
+
+    // ZSCAN
+    tester.setup(&["ZADD", "scan_zset", "1", "a", "2", "b", "3", "c"]);
+    let redis_zscan = exec_cmd(&mut tester.redis_conn, &["ZSCAN", "scan_zset", "0", "COUNT", "100"]);
+    let rust_zscan = exec_cmd(&mut tester.rust_conn, &["ZSCAN", "scan_zset", "0", "COUNT", "100"]);
+
+    match (&redis_zscan, &rust_zscan) {
+        (Response::Bulk(r), Response::Bulk(u)) if r.len() >= 2 && u.len() >= 2 => {
+            tester.passed += 1;
+            println!("  [PASS] ZSCAN scan_zset 0 COUNT 100 (returned valid structure)");
+        }
+        _ => {
+            tester.failed += 1;
+            println!("  [FAIL] ZSCAN scan_zset 0 COUNT 100\n    Redis: {:?}\n    Rust:  {:?}", redis_zscan, rust_zscan);
+        }
+    }
+
+    tester.report();
+    assert_eq!(tester.failed, 0, "Some SCAN operations differed");
 }
 
 /// Test server/info commands

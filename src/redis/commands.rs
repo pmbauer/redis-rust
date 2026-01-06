@@ -3481,7 +3481,40 @@ impl CommandExecutor {
                 if args.len() < 2 {
                     return Err("SET requires at least 2 arguments".to_string());
                 }
-                Ok(Command::set(args[0].clone(), SDS::from_str(&args[1])))
+                let key = args[0].clone();
+                let value = SDS::from_str(&args[1]);
+                let mut ex = None;
+                let mut px = None;
+                let mut nx = false;
+                let mut xx = false;
+                let mut get = false;
+
+                let mut i = 2;
+                while i < args.len() {
+                    let opt = args[i].to_uppercase();
+                    match opt.as_str() {
+                        "NX" => nx = true,
+                        "XX" => xx = true,
+                        "GET" => get = true,
+                        "EX" => {
+                            i += 1;
+                            if i >= args.len() {
+                                return Err("SET EX requires value".to_string());
+                            }
+                            ex = Some(args[i].parse().map_err(|_| "SET EX must be integer")?);
+                        }
+                        "PX" => {
+                            i += 1;
+                            if i >= args.len() {
+                                return Err("SET PX requires value".to_string());
+                            }
+                            px = Some(args[i].parse().map_err(|_| "SET PX must be integer")?);
+                        }
+                        _ => return Err(format!("Unknown SET option: {}", opt)),
+                    }
+                    i += 1;
+                }
+                Ok(Command::Set { key, value, ex, px, nx, xx, get })
             }
             "DEL" => {
                 if args.is_empty() {
@@ -3673,6 +3706,69 @@ impl CommandExecutor {
                     return Err("ZCARD requires 1 argument".to_string());
                 }
                 Ok(Command::ZCard(args[0].clone()))
+            }
+            "ZCOUNT" => {
+                if args.len() != 3 {
+                    return Err("ZCOUNT requires 3 arguments".to_string());
+                }
+                Ok(Command::ZCount(args[0].clone(), args[1].clone(), args[2].clone()))
+            }
+            "ZRANGEBYSCORE" => {
+                if args.len() < 3 {
+                    return Err("ZRANGEBYSCORE requires at least 3 arguments".to_string());
+                }
+                let key = args[0].clone();
+                let min = args[1].clone();
+                let max = args[2].clone();
+                let mut with_scores = false;
+                let mut limit = None;
+
+                let mut i = 3;
+                while i < args.len() {
+                    let opt = args[i].to_uppercase();
+                    match opt.as_str() {
+                        "WITHSCORES" => with_scores = true,
+                        "LIMIT" => {
+                            if i + 2 >= args.len() {
+                                return Err("ZRANGEBYSCORE LIMIT requires offset and count".to_string());
+                            }
+                            let offset: isize = args[i + 1].parse()
+                                .map_err(|_| "ZRANGEBYSCORE LIMIT offset must be integer")?;
+                            let count: usize = args[i + 2].parse()
+                                .map_err(|_| "ZRANGEBYSCORE LIMIT count must be integer")?;
+                            limit = Some((offset, count));
+                            i += 2;
+                        }
+                        _ => return Err(format!("Unknown ZRANGEBYSCORE option: {}", opt)),
+                    }
+                    i += 1;
+                }
+                Ok(Command::ZRangeByScore { key, min, max, with_scores, limit })
+            }
+            "LMOVE" => {
+                if args.len() != 4 {
+                    return Err("LMOVE requires 4 arguments".to_string());
+                }
+                let wherefrom = args[2].to_uppercase();
+                let whereto = args[3].to_uppercase();
+                if wherefrom != "LEFT" && wherefrom != "RIGHT" {
+                    return Err("LMOVE wherefrom must be LEFT or RIGHT".to_string());
+                }
+                if whereto != "LEFT" && whereto != "RIGHT" {
+                    return Err("LMOVE whereto must be LEFT or RIGHT".to_string());
+                }
+                Ok(Command::LMove {
+                    source: args[0].clone(),
+                    dest: args[1].clone(),
+                    wherefrom,
+                    whereto,
+                })
+            }
+            "HGETALL" => {
+                if args.len() != 1 {
+                    return Err("HGETALL requires 1 argument".to_string());
+                }
+                Ok(Command::HGetAll(args[0].clone()))
             }
             "EXISTS" => {
                 if args.is_empty() {
