@@ -113,7 +113,7 @@ pub fn run_partition_test(
         sim.execute(
             client_id,
             *node,
-            Command::Set(key.to_string(), SDS::from_str(value)),
+            Command::set(key.to_string(), SDS::from_str(value)),
         );
         sim.advance_time_ms(5);
         sim.gossip_round();
@@ -135,7 +135,7 @@ pub fn run_partition_test(
         sim.execute(
             client_id + writes_during_partition.len(),
             *node,
-            Command::Set(key.to_string(), SDS::from_str(value)),
+            Command::set(key.to_string(), SDS::from_str(value)),
         );
         sim.advance_time_ms(5);
         sim.gossip_round();
@@ -349,8 +349,8 @@ mod tests {
             sim.partition(1, 3);
 
             // Write on both sides simultaneously
-            sim.execute(1, 0, Command::Set("conflict_key".into(), SDS::from_str("side_a")));
-            sim.execute(2, 2, Command::Set("conflict_key".into(), SDS::from_str("side_b")));
+            sim.execute(1, 0, Command::set("conflict_key".into(), SDS::from_str("side_a")));
+            sim.execute(2, 2, Command::set("conflict_key".into(), SDS::from_str("side_b")));
 
             // Gossip within partitions
             for _ in 0..10 {
@@ -373,7 +373,7 @@ mod tests {
 
             // Write after heal to trigger cross-partition gossip
             // This simulates anti-entropy or new activity after partition heals
-            sim.execute(3, 0, Command::Set("conflict_key".into(), SDS::from_str("after_heal")));
+            sim.execute(3, 0, Command::set("conflict_key".into(), SDS::from_str("after_heal")));
 
             // Converge
             sim.converge(50);
@@ -394,7 +394,7 @@ mod tests {
         let mut sim = MultiNodeSimulation::new(5, 42);
 
         // Initial write
-        sim.execute(1, 0, Command::Set("cascade_key".into(), SDS::from_str("initial")));
+        sim.execute(1, 0, Command::set("cascade_key".into(), SDS::from_str("initial")));
         sim.converge(10);
 
         // Create cascading partitions: 0 -> 1 -> 2 -> 3 -> 4
@@ -407,7 +407,7 @@ mod tests {
         sim.partition(2, 4);
 
         // Write on node 0
-        sim.execute(2, 0, Command::Set("cascade_key".into(), SDS::from_str("from_0")));
+        sim.execute(2, 0, Command::set("cascade_key".into(), SDS::from_str("from_0")));
 
         // Gossip - message should cascade through the chain (0->1->2->3->4)
         // Each hop takes a gossip round
@@ -431,7 +431,7 @@ mod tests {
         sim.heal_partition(2, 4);
 
         // Write to trigger full propagation after heal
-        sim.execute(3, 0, Command::Set("cascade_key".into(), SDS::from_str("final")));
+        sim.execute(3, 0, Command::set("cascade_key".into(), SDS::from_str("final")));
         sim.converge(30);
 
         assert!(
@@ -453,7 +453,7 @@ mod tests {
             sim.partition(1, 2);
 
             // Write on node 0
-            sim.execute(1, 0, Command::Set("lossy_key".into(), SDS::from_str("value")));
+            sim.execute(1, 0, Command::set("lossy_key".into(), SDS::from_str("value")));
 
             // Gossip with packet loss
             for _ in 0..20 {
@@ -486,7 +486,7 @@ mod tests {
             sim.execute(
                 i * 2,
                 0,
-                Command::Set("flap_key".into(), SDS::from_str(&format!("value_{}", i))),
+                Command::set("flap_key".into(), SDS::from_str(&format!("value_{}", i))),
             );
 
             // Gossip within partition (0<->1 can talk, but not 0<->2)
@@ -500,7 +500,7 @@ mod tests {
             sim.execute(
                 i * 2 + 1,
                 0,
-                Command::Set("flap_key".into(), SDS::from_str(&format!("healed_{}", i))),
+                Command::set("flap_key".into(), SDS::from_str(&format!("healed_{}", i))),
             );
 
             // Converge after heal
@@ -557,7 +557,7 @@ mod tests {
         let mut sim = MultiNodeSimulation::new(3, 42);
 
         // Write A on node 0
-        sim.execute(1, 0, Command::Set("causal_key".into(), SDS::from_str("A")));
+        sim.execute(1, 0, Command::set("causal_key".into(), SDS::from_str("A")));
         sim.converge(10);
 
         // All nodes should see A
@@ -573,7 +573,7 @@ mod tests {
         sim.partition(1, 2);
 
         // Write B on node 0 (node 2 won't see this while partitioned)
-        sim.execute(2, 0, Command::Set("causal_key".into(), SDS::from_str("B")));
+        sim.execute(2, 0, Command::set("causal_key".into(), SDS::from_str("B")));
         sim.converge(10);
 
         // Nodes 0 and 1 should see B, node 2 should still see A
@@ -595,7 +595,7 @@ mod tests {
         sim.heal_partition(1, 2);
 
         // Write C to trigger gossip and propagate B to node 2
-        sim.execute(3, 0, Command::Set("causal_key".into(), SDS::from_str("C")));
+        sim.execute(3, 0, Command::set("causal_key".into(), SDS::from_str("C")));
         sim.converge(20);
 
         // All nodes should see C (the latest write after heal)
@@ -618,10 +618,10 @@ mod tests {
         sim.partition(1, 3);
 
         // Write different keys on both sides
-        sim.execute(1, 0, Command::Set("key_a".into(), SDS::from_str("value_a")));
-        sim.execute(2, 1, Command::Set("key_b".into(), SDS::from_str("value_b")));
-        sim.execute(3, 2, Command::Set("key_c".into(), SDS::from_str("value_c")));
-        sim.execute(4, 3, Command::Set("key_d".into(), SDS::from_str("value_d")));
+        sim.execute(1, 0, Command::set("key_a".into(), SDS::from_str("value_a")));
+        sim.execute(2, 1, Command::set("key_b".into(), SDS::from_str("value_b")));
+        sim.execute(3, 2, Command::set("key_c".into(), SDS::from_str("value_c")));
+        sim.execute(4, 3, Command::set("key_d".into(), SDS::from_str("value_d")));
 
         // Gossip within partitions
         sim.converge(20);
@@ -641,10 +641,10 @@ mod tests {
         sim.heal_partition(1, 3);
 
         // Write on each key to trigger cross-partition gossip
-        sim.execute(5, 0, Command::Set("key_a".into(), SDS::from_str("value_a_final")));
-        sim.execute(6, 1, Command::Set("key_b".into(), SDS::from_str("value_b_final")));
-        sim.execute(7, 2, Command::Set("key_c".into(), SDS::from_str("value_c_final")));
-        sim.execute(8, 3, Command::Set("key_d".into(), SDS::from_str("value_d_final")));
+        sim.execute(5, 0, Command::set("key_a".into(), SDS::from_str("value_a_final")));
+        sim.execute(6, 1, Command::set("key_b".into(), SDS::from_str("value_b_final")));
+        sim.execute(7, 2, Command::set("key_c".into(), SDS::from_str("value_c_final")));
+        sim.execute(8, 3, Command::set("key_d".into(), SDS::from_str("value_d_final")));
 
         // Converge
         sim.converge(50);
@@ -701,8 +701,8 @@ mod tests {
                 }
 
                 // Writes during partition from both sides
-                sim.execute(1, 0, Command::Set("stress_key".into(), SDS::from_str("v1")));
-                sim.execute(2, 4, Command::Set("stress_key".into(), SDS::from_str("v2")));
+                sim.execute(1, 0, Command::set("stress_key".into(), SDS::from_str("v1")));
+                sim.execute(2, 4, Command::set("stress_key".into(), SDS::from_str("v2")));
 
                 sim.converge(10);
 
@@ -712,7 +712,7 @@ mod tests {
                 }
 
                 // Write after heal to trigger convergence
-                sim.execute(3, 0, Command::Set("stress_key".into(), SDS::from_str("final")));
+                sim.execute(3, 0, Command::set("stress_key".into(), SDS::from_str("final")));
 
                 sim.converge(50);
 

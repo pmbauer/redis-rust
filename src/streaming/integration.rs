@@ -678,11 +678,11 @@ mod tests {
         state.set_delta_sink(sender.clone());
 
         // Execute some commands
-        state.execute(crate::redis::Command::Set(
+        state.execute(crate::redis::Command::set(
             "key1".to_string(),
             SDS::from_str("value1"),
         ));
-        state.execute(crate::redis::Command::Set(
+        state.execute(crate::redis::Command::set(
             "key2".to_string(),
             SDS::from_str("value2"),
         ));

@@ -20,7 +20,7 @@ fn test_batched_vs_unbatched_correctness() {
 
     for size in pipeline_sizes {
         let commands: Vec<Command> = (0..size)
-            .map(|i| Command::Set(format!("key{}", i), SDS::from_str(&format!("val{}", i))))
+            .map(|i| Command::set(format!("key{}", i), SDS::from_str(&format!("val{}", i))))
             .collect();
 
         // Batched (the fix)
@@ -67,7 +67,7 @@ fn test_pipeline_ordering() {
     let mut conn = SimulatedConnection::new(42);
 
     conn.send_pipeline(vec![
-        Command::Set("counter".to_string(), SDS::from_str("0")),
+        Command::set("counter".to_string(), SDS::from_str("0")),
         Command::Incr("counter".to_string()),
         Command::Incr("counter".to_string()),
         Command::Incr("counter".to_string()),
@@ -100,12 +100,12 @@ fn test_mixed_pipeline() {
     let mut conn = SimulatedConnection::new(42);
 
     conn.send_pipeline(vec![
-        Command::Set("a".to_string(), SDS::from_str("1")),
-        Command::Set("b".to_string(), SDS::from_str("2")),
+        Command::set("a".to_string(), SDS::from_str("1")),
+        Command::set("b".to_string(), SDS::from_str("2")),
         Command::Get("a".to_string()),
         Command::Get("b".to_string()),
         Command::Get("nonexistent".to_string()),
-        Command::Del("a".to_string()),
+        Command::del("a".to_string()),
         Command::Get("a".to_string()),
     ]);
 
@@ -128,7 +128,7 @@ fn test_partial_reads_handled() {
     let mut conn = SimulatedConnection::new(12345).with_partial_reads(0.5);
 
     let commands: Vec<Command> = (0..20)
-        .map(|i| Command::Set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
+        .map(|i| Command::set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
         .collect();
 
     conn.send_pipeline(commands);
@@ -148,7 +148,7 @@ fn test_deterministic_behavior() {
 
     for seed in seeds {
         let commands: Vec<Command> = (0..10)
-            .map(|i| Command::Set(format!("k{}", i), SDS::from_str(&format!("v{}", i))))
+            .map(|i| Command::set(format!("k{}", i), SDS::from_str(&format!("v{}", i))))
             .collect();
 
         // Run twice with same seed
@@ -206,7 +206,7 @@ fn test_1000_seeds_connection_correctness() {
         let commands: Vec<Command> = (0..16)
             .map(|i| {
                 if i % 2 == 0 {
-                    Command::Set(format!("k{}", i), SDS::from_str(&format!("v{}", i)))
+                    Command::set(format!("k{}", i), SDS::from_str(&format!("v{}", i)))
                 } else {
                     Command::Get(format!("k{}", i - 1))
                 }
@@ -273,7 +273,7 @@ fn test_large_pipeline_stress() {
     let mut conn = SimulatedConnection::new(42);
 
     let commands: Vec<Command> = (0..1000)
-        .map(|i| Command::Set(format!("key{:04}", i), SDS::from_str(&format!("value{:04}", i))))
+        .map(|i| Command::set(format!("key{:04}", i), SDS::from_str(&format!("value{:04}", i))))
         .collect();
 
     conn.send_pipeline(commands);

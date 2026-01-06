@@ -121,7 +121,7 @@ impl SimulatedNode {
 
     fn set(&mut self, key: &str, value: &str) {
         let sds = SDS::from_str(value);
-        let cmd = Command::Set(key.to_string(), sds);
+        let cmd = Command::set(key.to_string(), sds);
         self.executor.execute(&cmd);
         self.pending_writes.push((key.to_string(), value.to_string()));
     }

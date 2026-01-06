@@ -101,7 +101,7 @@ impl SimulatedReadBuffer {
             Command::Ping => {
                 self.pending_data.extend_from_slice(b"*1\r\n$4\r\nPING\r\n");
             }
-            Command::Set(key, value) => {
+            Command::Set { key, value, .. } => {
                 let key_bytes = key.as_bytes();
                 let value_bytes = value.as_bytes();
                 self.pending_data.extend_from_slice(b"*3\r\n$3\r\nSET\r\n$");
@@ -130,13 +130,18 @@ impl SimulatedReadBuffer {
                 self.pending_data.extend_from_slice(key_bytes);
                 self.pending_data.extend_from_slice(b"\r\n");
             }
-            Command::Del(key) => {
-                let key_bytes = key.as_bytes();
-                self.pending_data.extend_from_slice(b"*2\r\n$3\r\nDEL\r\n$");
-                self.pending_data.extend_from_slice(key_bytes.len().to_string().as_bytes());
-                self.pending_data.extend_from_slice(b"\r\n");
-                self.pending_data.extend_from_slice(key_bytes);
-                self.pending_data.extend_from_slice(b"\r\n");
+            Command::Del(keys) => {
+                // Encode DEL with all keys
+                let num_elements = 1 + keys.len();
+                self.pending_data.extend_from_slice(format!("*{}\r\n$3\r\nDEL\r\n", num_elements).as_bytes());
+                for key in keys {
+                    let key_bytes = key.as_bytes();
+                    self.pending_data.extend_from_slice(b"$");
+                    self.pending_data.extend_from_slice(key_bytes.len().to_string().as_bytes());
+                    self.pending_data.extend_from_slice(b"\r\n");
+                    self.pending_data.extend_from_slice(key_bytes);
+                    self.pending_data.extend_from_slice(b"\r\n");
+                }
             }
             _ => {
                 // For other commands, encode as simple ping for now
@@ -499,7 +504,7 @@ impl PipelineSimulator {
             let commands: Vec<Command> = (0..size)
                 .map(|i| {
                     if rng.gen_bool(0.5) {
-                        Command::Set(format!("key{}", i), crate::redis::SDS::from_str(&format!("value{}", i)))
+                        Command::set(format!("key{}", i), crate::redis::SDS::from_str(&format!("value{}", i)))
                     } else {
                         Command::Get(format!("key{}", i % (i.max(1))))
                     }
@@ -591,8 +596,8 @@ mod tests {
     #[test]
     fn test_pipeline_batched_vs_unbatched() {
         let commands = vec![
-            Command::Set("k1".to_string(), SDS::from_str("v1")),
-            Command::Set("k2".to_string(), SDS::from_str("v2")),
+            Command::set("k1".to_string(), SDS::from_str("v1")),
+            Command::set("k2".to_string(), SDS::from_str("v2")),
             Command::Get("k1".to_string()),
             Command::Get("k2".to_string()),
         ];
@@ -620,7 +625,7 @@ mod tests {
         let mut conn = SimulatedConnection::new(42);
 
         conn.send_pipeline(vec![
-            Command::Set("counter".to_string(), SDS::from_str("0")),
+            Command::set("counter".to_string(), SDS::from_str("0")),
             Command::Incr("counter".to_string()),
             Command::Incr("counter".to_string()),
             Command::Incr("counter".to_string()),
@@ -645,7 +650,7 @@ mod tests {
         let mut conn = SimulatedConnection::new(42);
 
         let commands: Vec<Command> = (0..100)
-            .map(|i| Command::Set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
+            .map(|i| Command::set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
             .collect();
 
         conn.send_pipeline(commands);
@@ -657,7 +662,7 @@ mod tests {
         // Compare with unbatched
         let mut unbatched = SimulatedConnection::new(42).with_unbatched_flush();
         let commands: Vec<Command> = (0..100)
-            .map(|i| Command::Set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
+            .map(|i| Command::set(format!("key{}", i), SDS::from_str(&format!("value{}", i))))
             .collect();
         unbatched.send_pipeline(commands);
         unbatched.process();
@@ -670,7 +675,7 @@ mod tests {
         let mut conn = SimulatedConnection::new(42).with_partial_reads(0.5);
 
         conn.send_pipeline(vec![
-            Command::Set("k1".to_string(), SDS::from_str("v1")),
+            Command::set("k1".to_string(), SDS::from_str("v1")),
             Command::Get("k1".to_string()),
         ]);
 
@@ -712,14 +717,14 @@ mod tests {
 
         let mut conn1 = SimulatedConnection::new(seed);
         conn1.send_pipeline(vec![
-            Command::Set("k".to_string(), SDS::from_str("v")),
+            Command::set("k".to_string(), SDS::from_str("v")),
             Command::Get("k".to_string()),
         ]);
         let responses1 = conn1.process();
 
         let mut conn2 = SimulatedConnection::new(seed);
         conn2.send_pipeline(vec![
-            Command::Set("k".to_string(), SDS::from_str("v")),
+            Command::set("k".to_string(), SDS::from_str("v")),
             Command::Get("k".to_string()),
         ]);
         let responses2 = conn2.process();

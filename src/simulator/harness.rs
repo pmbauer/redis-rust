@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn test_basic_set_get() {
         let harness = ScenarioBuilder::new(42)
-            .at_time(0).client(1, Command::Set("key".into(), SDS::from_str("value")))
+            .at_time(0).client(1, Command::set("key".into(), SDS::from_str("value")))
             .at_time(10).client(1, Command::Get("key".into()))
             .run();
 
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_ttl_expiration_with_fast_forward() {
         let harness = ScenarioBuilder::new(42)
-            .at_time(0).client(1, Command::SetEx("temp".into(), 1, SDS::from_str("expires")))
+            .at_time(0).client(1, Command::setex("temp".into(), 1, SDS::from_str("expires")))
             .at_time(500).client(1, Command::Get("temp".into()))
             .at_time(1500).client(1, Command::Get("temp".into()))
             .run_with_eviction(100);
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_ttl_boundary_race() {
         let harness = ScenarioBuilder::new(42)
-            .at_time(0).client(1, Command::SetEx("race".into(), 1, SDS::from_str("data")))
+            .at_time(0).client(1, Command::setex("race".into(), 1, SDS::from_str("data")))
             .at_time(999).client(1, Command::Get("race".into()))
             .at_time(1000).client(2, Command::Get("race".into()))
             .at_time(1001).client(3, Command::Get("race".into()))
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_concurrent_increments() {
         let harness = ScenarioBuilder::new(42)
-            .at_time(0).client(1, Command::Set("counter".into(), SDS::from_str("0")))
+            .at_time(0).client(1, Command::set("counter".into(), SDS::from_str("0")))
             .at_time(10).client(1, Command::Incr("counter".into()))
             .at_time(10).client(2, Command::Incr("counter".into()))
             .at_time(10).client(3, Command::Incr("counter".into()))
@@ -327,15 +327,15 @@ mod tests {
     #[test]
     fn test_deterministic_replay() {
         let run1 = ScenarioBuilder::new(12345)
-            .at_time(0).client(1, Command::Set("a".into(), SDS::from_str("1")))
-            .at_time(5).client(2, Command::Set("b".into(), SDS::from_str("2")))
+            .at_time(0).client(1, Command::set("a".into(), SDS::from_str("1")))
+            .at_time(5).client(2, Command::set("b".into(), SDS::from_str("2")))
             .at_time(10).client(1, Command::Get("a".into()))
             .at_time(10).client(2, Command::Get("b".into()))
             .run();
 
         let run2 = ScenarioBuilder::new(12345)
-            .at_time(0).client(1, Command::Set("a".into(), SDS::from_str("1")))
-            .at_time(5).client(2, Command::Set("b".into(), SDS::from_str("2")))
+            .at_time(0).client(1, Command::set("a".into(), SDS::from_str("1")))
+            .at_time(5).client(2, Command::set("b".into(), SDS::from_str("2")))
             .at_time(10).client(1, Command::Get("a".into()))
             .at_time(10).client(2, Command::Get("b".into()))
             .run();
@@ -350,7 +350,7 @@ mod tests {
     fn test_buggify_chaos() {
         let harness = ScenarioBuilder::new(42)
             .with_buggify(0.5)
-            .at_time(0).client(1, Command::Set("key".into(), SDS::from_str("value")))
+            .at_time(0).client(1, Command::set("key".into(), SDS::from_str("value")))
             .at_time(100).client(1, Command::Get("key".into()))
             .run();
 
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn test_persist_cancels_expiration() {
         let harness = ScenarioBuilder::new(42)
-            .at_time(0).client(1, Command::SetEx("persist_test".into(), 1, SDS::from_str("data")))
+            .at_time(0).client(1, Command::setex("persist_test".into(), 1, SDS::from_str("data")))
             .at_time(500).client(1, Command::Persist("persist_test".into()))
             .at_time(2000).client(1, Command::Get("persist_test".into()))
             .run_with_eviction(100);
@@ -379,7 +379,7 @@ mod tests {
         for seed in 0..100 {
             let harness = ScenarioBuilder::new(seed)
                 .with_buggify(0.1)
-                .at_time(0).client(1, Command::Set("x".into(), SDS::from_str("0")))
+                .at_time(0).client(1, Command::set("x".into(), SDS::from_str("0")))
                 .at_time(10).client(1, Command::Incr("x".into()))
                 .at_time(20).client(1, Command::Incr("x".into()))
                 .at_time(30).client(1, Command::Get("x".into()))

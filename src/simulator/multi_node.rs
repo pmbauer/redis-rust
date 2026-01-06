@@ -83,17 +83,15 @@ impl SimulatedNode {
 
         // Record writes for replication
         match cmd {
-            Command::Set(key, value) => {
-                self.replica_state
-                    .record_write(key.clone(), value.clone(), None);
-            }
-            Command::SetEx(key, seconds, value) => {
-                let expiry_ms = Some(*seconds as u64 * 1000);
+            Command::Set { key, value, ex, .. } => {
+                let expiry_ms = ex.map(|s| s as u64 * 1000);
                 self.replica_state
                     .record_write(key.clone(), value.clone(), expiry_ms);
             }
-            Command::Del(key) => {
-                self.replica_state.record_delete(key.clone());
+            Command::Del(keys) => {
+                for key in keys {
+                    self.replica_state.record_delete(key.clone());
+                }
             }
             _ => {}
         }
@@ -115,10 +113,10 @@ impl SimulatedNode {
             // Also apply to command executor for GET to work
             if !delta.value.is_tombstone() {
                 if let Some(value) = delta.value.get() {
-                    let _ = self.executor.execute(&Command::Set(delta.key.clone(), value.clone()));
+                    let _ = self.executor.execute(&Command::set(delta.key.clone(), value.clone()));
                 }
             } else {
-                let _ = self.executor.execute(&Command::Del(delta.key.clone()));
+                let _ = self.executor.execute(&Command::del(delta.key.clone()));
             }
         }
     }
@@ -524,7 +522,7 @@ pub fn check_single_key_linearizability(
     let key_ops: Vec<&TimestampedOperation> = history
         .iter()
         .filter(|op| match &op.command {
-            Command::Set(k, _) | Command::Get(k) => k == key,
+            Command::Set { key: k, .. } | Command::Get(k) => k == key,
             _ => false,
         })
         .collect();
@@ -547,7 +545,7 @@ pub fn check_single_key_linearizability(
 
     for op in &ops {
         match &op.command {
-            Command::Set(_, value) => {
+            Command::Set { value, .. } => {
                 expected_value = Some(String::from_utf8_lossy(value.as_bytes()).to_string());
             }
             Command::Get(_) => {
@@ -586,7 +584,7 @@ mod tests {
         sim.execute(
             1,
             0,
-            Command::Set("key1".into(), SDS::from_str("value1")),
+            Command::set("key1".into(), SDS::from_str("value1")),
         );
 
         // Gossip round
@@ -613,7 +611,7 @@ mod tests {
         sim.execute(
             1,
             0,
-            Command::Set("key1".into(), SDS::from_str("value_a")),
+            Command::set("key1".into(), SDS::from_str("value_a")),
         );
 
         // Gossip rounds while partitioned
@@ -634,7 +632,7 @@ mod tests {
         sim.execute(
             1,
             0,
-            Command::Set("key1".into(), SDS::from_str("value_b")),
+            Command::set("key1".into(), SDS::from_str("value_b")),
         );
 
         // Gossip rounds after healing
@@ -656,17 +654,17 @@ mod tests {
             sim.execute(
                 1,
                 0,
-                Command::Set("key".into(), SDS::from_str("from_node_0")),
+                Command::set("key".into(), SDS::from_str("from_node_0")),
             );
             sim.execute(
                 2,
                 1,
-                Command::Set("key".into(), SDS::from_str("from_node_1")),
+                Command::set("key".into(), SDS::from_str("from_node_1")),
             );
             sim.execute(
                 3,
                 2,
-                Command::Set("key".into(), SDS::from_str("from_node_2")),
+                Command::set("key".into(), SDS::from_str("from_node_2")),
             );
 
             // Converge
@@ -690,7 +688,7 @@ mod tests {
         sim.execute(
             1,
             0,
-            Command::Set("lossy_key".into(), SDS::from_str("value")),
+            Command::set("lossy_key".into(), SDS::from_str("value")),
         );
 
         // Many gossip rounds to overcome packet loss
@@ -747,7 +745,7 @@ mod tests {
             sim.execute(
                 1,
                 node,
-                Command::Set("test_key".into(), SDS::from_str(&format!("value_{}", seed))),
+                Command::set("test_key".into(), SDS::from_str(&format!("value_{}", seed))),
             );
 
             // Converge with plenty of rounds

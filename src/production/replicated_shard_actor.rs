@@ -238,10 +238,10 @@ impl ReplicatedShardActor {
                     } else if let Some(v) = value.get() {
                         if let Some(expiry_ms) = value.expiry_ms {
                             let seconds = (expiry_ms / 1000) as i64;
-                            let cmd = Command::SetEx(key, seconds, v.clone());
+                            let cmd = Command::setex(key, seconds, v.clone());
                             self.executor.execute(&cmd);
                         } else {
-                            let cmd = Command::Set(key, v.clone());
+                            let cmd = Command::set(key, v.clone());
                             self.executor.execute(&cmd);
                         }
                     }
@@ -258,23 +258,40 @@ impl ReplicatedShardActor {
     /// Record mutation after command execution
     fn record_mutation_post_execute(&mut self, cmd: &Command) -> Option<ReplicationDelta> {
         match cmd {
-            Command::Set(key, value) => {
-                Some(self.replica_state.record_write(key.clone(), value.clone(), None))
-            }
-            Command::SetEx(key, seconds, value) => {
-                let expiry_ms = (*seconds as u64) * 1000;
-                Some(self.replica_state.record_write(key.clone(), value.clone(), Some(expiry_ms)))
-            }
-            Command::SetNx(key, value) => {
-                if let Some(v) = self.executor.get_data().get(key) {
-                    if v.as_string().is_some() {
-                        return Some(self.replica_state.record_write(key.clone(), value.clone(), None));
+            Command::Set { key, value, ex, px, nx, xx, .. } => {
+                // Calculate expiry in milliseconds
+                let expiry_ms = match (ex, px) {
+                    (Some(seconds), _) => Some(*seconds as u64 * 1000),
+                    (_, Some(millis)) => Some(*millis as u64),
+                    _ => None,
+                };
+
+                // For NX: only record if key existed (command was no-op)
+                if *nx {
+                    if let Some(v) = self.executor.get_data().get(key) {
+                        if v.as_string().is_some() {
+                            return Some(self.replica_state.record_write(key.clone(), value.clone(), expiry_ms));
+                        }
+                    }
+                    return None;
+                }
+
+                // For XX: only record if key exists
+                if *xx {
+                    if self.executor.get_data().get(key).is_none() {
+                        return None;
                     }
                 }
-                None
+
+                Some(self.replica_state.record_write(key.clone(), value.clone(), expiry_ms))
             }
-            Command::Del(key) => {
-                self.replica_state.record_delete(key.clone())
+            Command::Del(keys) => {
+                // Record deletion for each key
+                let mut result = None;
+                for key in keys {
+                    result = self.replica_state.record_delete(key.clone());
+                }
+                result
             }
             Command::Incr(key) | Command::Decr(key) |
             Command::IncrBy(key, _) | Command::DecrBy(key, _) |
@@ -406,14 +423,14 @@ impl ReplicatedShardActor {
         } else if let Some(value) = delta.value.get() {
             if let Some(expiry_ms) = delta.value.expiry_ms {
                 let seconds = (expiry_ms / 1000) as i64;
-                let cmd = Command::SetEx(delta.key.clone(), seconds, value.clone());
+                let cmd = Command::setex(delta.key.clone(), seconds, value.clone());
                 self.executor.execute(&cmd);
             } else {
-                let cmd = Command::Set(delta.key.clone(), value.clone());
+                let cmd = Command::set(delta.key.clone(), value.clone());
                 self.executor.execute(&cmd);
             }
         } else if delta.value.is_tombstone() {
-            let cmd = Command::Del(delta.key.clone());
+            let cmd = Command::del(delta.key.clone());
             self.executor.execute(&cmd);
         }
     }
@@ -445,7 +462,7 @@ mod tests {
         );
 
         // Execute SET
-        let (result, delta) = handle.execute(Command::Set(
+        let (result, delta) = handle.execute(Command::set(
             "key1".to_string(),
             crate::redis::SDS::from_str("value1"),
         )).await;
@@ -469,8 +486,8 @@ mod tests {
         );
 
         // Execute some writes
-        handle.execute(Command::Set("k1".to_string(), crate::redis::SDS::from_str("v1"))).await;
-        handle.execute(Command::Set("k2".to_string(), crate::redis::SDS::from_str("v2"))).await;
+        handle.execute(Command::set("k1".to_string(), crate::redis::SDS::from_str("v1"))).await;
+        handle.execute(Command::set("k2".to_string(), crate::redis::SDS::from_str("v2"))).await;
 
         // Drain deltas
         let deltas = handle.drain_pending_deltas().await;
@@ -526,8 +543,8 @@ mod tests {
         );
 
         // Execute some writes
-        handle.execute(Command::Set("k1".to_string(), crate::redis::SDS::from_str("v1"))).await;
-        handle.execute(Command::Set("k2".to_string(), crate::redis::SDS::from_str("v2"))).await;
+        handle.execute(Command::set("k1".to_string(), crate::redis::SDS::from_str("v1"))).await;
+        handle.execute(Command::set("k2".to_string(), crate::redis::SDS::from_str("v2"))).await;
 
         // Get snapshot
         let snapshot = handle.get_snapshot().await;

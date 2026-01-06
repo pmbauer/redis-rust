@@ -23,7 +23,7 @@ fn main() {
     for i in 0..10000 {
         let key = format!("warmup:{}", i);
         let value = SDS::from_str("warmup_value");
-        executor.execute(&Command::Set(key, value));
+        executor.execute(&Command::set(key, value));
     }
 
     println!("Running {} iterations of each command type...\n", iterations);
@@ -33,7 +33,7 @@ fn main() {
     for i in 0..iterations {
         let key = format!("key:{}", i % 10000);
         let value = SDS::from_str("value_data_here_for_testing");
-        executor.execute(&Command::Set(key, value));
+        executor.execute(&Command::set(key, value));
     }
     let set_duration = start.elapsed();
     println!("SET: {} ops in {:?} ({:.0} ops/sec)",
@@ -55,7 +55,7 @@ fn main() {
     for i in 0..1000 {
         let key = format!("counter:{}", i);
         let value = SDS::from_str("0");
-        executor.execute(&Command::Set(key, value));
+        executor.execute(&Command::set(key, value));
     }
     let start = Instant::now();
     for i in 0..iterations {

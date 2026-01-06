@@ -51,9 +51,9 @@ async fn test_streaming_persistence_basic_flow() {
     state.set_delta_sink(sender);
 
     // Execute some commands
-    state.execute(Command::Set("key1".to_string(), sds("value1"))).await;
-    state.execute(Command::Set("key2".to_string(), sds("value2"))).await;
-    state.execute(Command::Set("key3".to_string(), sds("value3"))).await;
+    state.execute(Command::set("key1".to_string(), sds("value1"))).await;
+    state.execute(Command::set("key2".to_string(), sds("value2"))).await;
+    state.execute(Command::set("key3".to_string(), sds("value3"))).await;
 
     // Give worker time to process
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -115,7 +115,7 @@ async fn test_streaming_persistence_localfs() {
 
     // Execute commands
     for i in 0..10 {
-        state.execute(Command::Set(format!("key{}", i), sds(&format!("value{}", i)))).await;
+        state.execute(Command::set(format!("key{}", i), sds(&format!("value{}", i)))).await;
     }
 
     // Allow processing
@@ -165,7 +165,7 @@ async fn test_streaming_persistence_high_throughput() {
     // Execute many commands
     let num_commands = 500;
     for i in 0..num_commands {
-        state.execute(Command::Set(format!("k{}", i), sds(&format!("v{}", i)))).await;
+        state.execute(Command::set(format!("k{}", i), sds(&format!("v{}", i)))).await;
     }
 
     // Allow processing
@@ -215,8 +215,8 @@ async fn test_streaming_persistence_state_recovery() {
         let mut state = ReplicatedShardedState::new(test_config(1));
         state.set_delta_sink(sender);
 
-        state.execute(Command::Set("persistent_key".to_string(), sds("persistent_value"))).await;
-        state.execute(Command::Set("another_key".to_string(), sds("another_value"))).await;
+        state.execute(Command::set("persistent_key".to_string(), sds("persistent_value"))).await;
+        state.execute(Command::set("another_key".to_string(), sds("another_value"))).await;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         handle.shutdown();
@@ -267,7 +267,7 @@ async fn test_streaming_persistence_multi_replica() {
         state.set_delta_sink(sender);
 
         for (key, value) in commands {
-            state.execute(Command::Set(key.to_string(), SDS::from_str(value))).await;
+            state.execute(Command::set(key.to_string(), SDS::from_str(value))).await;
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -328,7 +328,7 @@ async fn test_streaming_persistence_backpressure() {
     // In this test we're checking that the delta sink send succeeds even without
     // the worker running (channel is unbounded)
     for i in 0..100 {
-        state.execute(Command::Set(format!("key{}", i), sds(&format!("value{}", i)))).await;
+        state.execute(Command::set(format!("key{}", i), sds(&format!("value{}", i)))).await;
     }
 
     // Now start the worker and verify it can drain
@@ -370,7 +370,7 @@ async fn test_streaming_persistence_segment_ordering() {
 
     // Write sequentially numbered keys
     for i in 0..25 {
-        state.execute(Command::Set(format!("seq{:03}", i), sds(&format!("v{}", i)))).await;
+        state.execute(Command::set(format!("seq{:03}", i), sds(&format!("v{}", i)))).await;
         // Small delay to ensure ordering
         if i % 5 == 4 {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -412,9 +412,9 @@ async fn test_streaming_persistence_deletes() {
     state.set_delta_sink(sender);
 
     // Set and then delete
-    state.execute(Command::Set("to_delete".to_string(), sds("temporary"))).await;
-    state.execute(Command::Del("to_delete".to_string())).await;
-    state.execute(Command::Set("to_keep".to_string(), sds("permanent"))).await;
+    state.execute(Command::set("to_delete".to_string(), sds("temporary"))).await;
+    state.execute(Command::del("to_delete".to_string())).await;
+    state.execute(Command::set("to_keep".to_string(), sds("permanent"))).await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     handle.shutdown();

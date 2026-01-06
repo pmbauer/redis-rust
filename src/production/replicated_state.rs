@@ -196,7 +196,7 @@ impl<T: TimeSource> ReplicatedShardedState<T> {
                 let futures: Vec<_> = pairs.iter()
                     .map(|(key, value)| {
                         let shard_idx = hash_key(key);
-                        let set_cmd = Command::Set(key.clone(), value.clone());
+                        let set_cmd = Command::set(key.clone(), value.clone());
                         self.shards[shard_idx].execute(set_cmd)
                     })
                     .collect();

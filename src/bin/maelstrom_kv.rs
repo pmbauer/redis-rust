@@ -142,7 +142,7 @@ fn main() -> io::Result<()> {
                 let key = value_to_string(&msg.body.key);
                 let value = value_to_string(&msg.body.value);
                 let sds = SDS::from_str(&value);
-                let cmd = Command::Set(key, sds);
+                let cmd = Command::set(key, sds);
                 let _ = executor.execute(&cmd);
                 
                 Response {
@@ -171,7 +171,7 @@ fn main() -> io::Result<()> {
                         let current_str = String::from_utf8_lossy(&data);
                         if current_str == from_value {
                             let sds = SDS::from_str(&to_value);
-                            let set_cmd = Command::Set(key, sds);
+                            let set_cmd = Command::set(key, sds);
                             let _ = executor.execute(&set_cmd);
                             Response {
                                 src: msg.dest.clone(),
