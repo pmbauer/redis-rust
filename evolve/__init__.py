@@ -1,5 +1,5 @@
 """
-OpenEvolve-style Performance Optimization Harness
+RedisEvolve - Performance Optimization Harness
 
 Evolutionary optimization that automatically discovers optimal configuration
 parameters by running benchmarks and evolving towards Redis 8.0 performance.

@@ -1,4 +1,4 @@
-# Python dependencies for OpenEvolve harness
+# Python dependencies for RedisEvolve harness
 # Install with: pip install -r evolve/requirements.txt
 
 # No external dependencies required - uses Python stdlib only!

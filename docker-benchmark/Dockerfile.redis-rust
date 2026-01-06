@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 
 COPY --from=builder /app/target/release/redis-server-optimized /usr/local/bin/
 
-# Copy performance configuration (for OpenEvolve harness)
+# Copy performance configuration (for RedisEvolve harness)
 # If perf_config.toml exists in build context, it will be used
 # Otherwise, the server will use default values
 COPY perf_config.toml* /etc/redis-rust/

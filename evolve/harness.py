@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OpenEvolve-style Performance Optimization Harness
+RedisEvolve - Performance Optimization Harness
 
 Evolutionary optimization that automatically discovers optimal configuration
 parameters by running benchmarks and evolving towards Redis 8.0 performance.
@@ -54,8 +54,8 @@ def print_banner() -> None:
     """Print startup banner."""
     print()
     print("=" * 60)
-    print("  OpenEvolve Performance Optimization Harness")
-    print("  Redis-Rust Evolutionary Configuration Discovery")
+    print("  RedisEvolve - Performance Optimization Harness")
+    print("  Evolutionary Configuration Discovery")
     print("=" * 60)
     print()
 
@@ -70,7 +70,7 @@ def print_param_space() -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OpenEvolve-style performance optimization harness",
+        description="RedisEvolve - performance optimization harness",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

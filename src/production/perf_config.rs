@@ -1,7 +1,7 @@
 //! Performance Configuration - Tunable parameters for evolutionary optimization
 //!
 //! This module provides a configuration system that allows performance parameters
-//! to be tuned without recompiling. Used by the OpenEvolve harness to discover
+//! to be tuned without recompiling. Used by the RedisEvolve harness to discover
 //! optimal configurations through evolutionary optimization.
 
 use serde::Deserialize;
