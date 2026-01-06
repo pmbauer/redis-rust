@@ -1,0 +1,90 @@
+{
+  "generation": 1,
+  "timestamp": "2026-01-05T21:42:05.617656",
+  "population": [
+    {
+      "id": 2,
+      "config": {
+        "num_shards": 16,
+        "response_pool.capacity": 832,
+        "response_pool.prewarm": 48,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 60,
+        "batching.batch_threshold": 7
+      },
+      "fitness": 84.55264631742986,
+      "generation": 0,
+      "parent_ids": []
+    },
+    {
+      "id": 5,
+      "config": {
+        "num_shards": 16,
+        "response_pool.capacity": 640,
+        "response_pool.prewarm": 16,
+        "buffers.read_size": 8192,
+        "batching.min_pipeline_buffer": 80,
+        "batching.batch_threshold": 5
+      },
+      "fitness": 83.1492894963872,
+      "generation": 0,
+      "parent_ids": []
+    },
+    {
+      "id": 4,
+      "config": {
+        "num_shards": 8,
+        "response_pool.capacity": 832,
+        "response_pool.prewarm": 112,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 180,
+        "batching.batch_threshold": 7
+      },
+      "fitness": 76.42278782030787,
+      "generation": 0,
+      "parent_ids": []
+    },
+    {
+      "id": 1,
+      "config": {
+        "num_shards": 16,
+        "response_pool.capacity": 256,
+        "response_pool.prewarm": 64,
+        "buffers.read_size": 8192,
+        "batching.min_pipeline_buffer": 60,
+        "batching.batch_threshold": 2
+      },
+      "fitness": 76.2725772938741,
+      "generation": 0,
+      "parent_ids": []
+    },
+    {
+      "id": 3,
+      "config": {
+        "num_shards": 8,
+        "response_pool.capacity": 64,
+        "response_pool.prewarm": 96,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 200,
+        "batching.batch_threshold": 7
+      },
+      "fitness": 72.59462938066788,
+      "generation": 0,
+      "parent_ids": []
+    },
+    {
+      "id": 6,
+      "config": {
+        "num_shards": 8,
+        "response_pool.capacity": 192,
+        "response_pool.prewarm": 16,
+        "buffers.read_size": 24576,
+        "batching.min_pipeline_buffer": 30,
+        "batching.batch_threshold": 8
+      },
+      "fitness": 71.9171699070316,
+      "generation": 0,
+      "parent_ids": []
+    }
+  ]
+}

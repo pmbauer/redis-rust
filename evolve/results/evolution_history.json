@@ -1,0 +1,88 @@
+{
+  "completed_at": "2026-01-05T21:42:05.618725",
+  "generations": 3,
+  "population_size": 6,
+  "mutation_rate": 0.3,
+  "best_candidate": {
+    "id": 11,
+    "config": {
+      "num_shards": 16,
+      "response_pool.capacity": 832,
+      "response_pool.prewarm": 48,
+      "buffers.read_size": 16384,
+      "batching.min_pipeline_buffer": 60,
+      "batching.batch_threshold": 7
+    },
+    "fitness": 84.90093783095276,
+    "generation": 1,
+    "parent_ids": [
+      2,
+      2
+    ]
+  },
+  "history": [
+    {
+      "generation": 1,
+      "best_fitness": 84.55264631742986,
+      "avg_fitness": 77.48485003594975,
+      "best_config": {
+        "num_shards": 16,
+        "response_pool.capacity": 832,
+        "response_pool.prewarm": 48,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 60,
+        "batching.batch_threshold": 7
+      },
+      "population_fitness": [
+        84.55264631742986,
+        83.1492894963872,
+        76.42278782030787,
+        76.2725772938741,
+        72.59462938066788,
+        71.9171699070316
+      ]
+    },
+    {
+      "generation": 2,
+      "best_fitness": 84.90093783095276,
+      "avg_fitness": 80.94225766362815,
+      "best_config": {
+        "num_shards": 16,
+        "response_pool.capacity": 832,
+        "response_pool.prewarm": 48,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 60,
+        "batching.batch_threshold": 7
+      },
+      "population_fitness": [
+        84.90093783095276,
+        84.55264631742986,
+        83.1492894963872,
+        81.66247717438435,
+        80.57192372156449,
+        70.8162714410503
+      ]
+    },
+    {
+      "generation": 3,
+      "best_fitness": 84.90093783095276,
+      "avg_fitness": 80.35295552868591,
+      "best_config": {
+        "num_shards": 16,
+        "response_pool.capacity": 832,
+        "response_pool.prewarm": 48,
+        "buffers.read_size": 16384,
+        "batching.min_pipeline_buffer": 60,
+        "batching.batch_threshold": 7
+      },
+      "population_fitness": [
+        84.90093783095276,
+        84.55264631742986,
+        83.16421711868932,
+        79.67880007296995,
+        77.40107877380868,
+        72.42005305826491
+      ]
+    }
+  ]
+}

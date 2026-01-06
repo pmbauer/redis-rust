@@ -1,12 +1,10 @@
-use super::{ShardedActorState, ConnectionPool};
-use super::connection_optimized::OptimizedConnectionHandler;
+use super::{ShardedActorState, ConnectionPool, PerformanceConfig};
+use super::connection_optimized::{OptimizedConnectionHandler, ConnectionConfig};
 use super::ttl_manager::TtlManagerActor;
 use crate::observability::{DatadogConfig, Metrics};
 use tokio::net::TcpListener;
 use tracing::{info, error};
 use std::sync::Arc;
-
-const NUM_SHARDS: usize = 16;
 
 pub struct OptimizedRedisServer {
     addr: String,
@@ -20,14 +18,33 @@ impl OptimizedRedisServer {
     }
 
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let state = ShardedActorState::new();
+        // Load performance configuration from file or environment
+        let perf_config = PerformanceConfig::from_env();
+        if let Err(e) = perf_config.validate() {
+            error!("Invalid performance config: {}", e);
+            return Err(e.into());
+        }
+
+        info!(
+            "Performance config: shards={}, pool_capacity={}, pool_prewarm={}, read_buffer={}, min_pipeline={}",
+            perf_config.num_shards,
+            perf_config.response_pool.capacity,
+            perf_config.response_pool.prewarm,
+            perf_config.buffers.read_size,
+            perf_config.batching.min_pipeline_buffer,
+        );
+
+        let state = ShardedActorState::with_perf_config(&perf_config);
         let connection_pool = Arc::new(ConnectionPool::new(10000, 512));
+
+        // Create connection config from performance config
+        let conn_config = ConnectionConfig::from_perf_config(&perf_config.buffers, &perf_config.batching);
 
         // Initialize metrics
         let dd_config = DatadogConfig::from_env();
         let metrics = Arc::new(Metrics::new(&dd_config));
 
-        info!("Initialized Tiger Style Redis with {} shards (lock-free)", NUM_SHARDS);
+        info!("Initialized Tiger Style Redis with {} shards (lock-free)", perf_config.num_shards);
 
         // Spawn TTL manager actor with shutdown handle
         let _ttl_handle = TtlManagerActor::spawn(state.clone(), metrics.clone());
@@ -43,6 +60,7 @@ impl OptimizedRedisServer {
                     let state_clone = state.clone();
                     let pool = connection_pool.clone();
                     let metrics_clone = metrics.clone();
+                    let conn_config_clone = conn_config.clone();
 
                     tokio::spawn(async move {
                         // TigerStyle: Handle Result instead of unwrap
@@ -60,6 +78,7 @@ impl OptimizedRedisServer {
                             client_addr,
                             pool.buffer_pool(),
                             metrics_clone,
+                            conn_config_clone,
                         );
                         handler.run().await;
                     });

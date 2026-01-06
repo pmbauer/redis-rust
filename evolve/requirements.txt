@@ -1,0 +1,13 @@
+# Python dependencies for OpenEvolve harness
+# Install with: pip install -r evolve/requirements.txt
+
+# No external dependencies required - uses Python stdlib only!
+# The harness uses:
+#   - subprocess: for running Docker commands
+#   - json: for serialization
+#   - random: for evolution operators
+#   - logging: for output
+#   - pathlib: for file handling
+#   - dataclasses: for data structures
+#   - re: for parsing benchmark results
+#   - argparse: for CLI

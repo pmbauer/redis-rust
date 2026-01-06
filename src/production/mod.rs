@@ -12,8 +12,11 @@ mod hotkey;
 mod adaptive_replication;
 mod load_balancer;
 mod response_pool;
+mod perf_config;
 
 pub use server_optimized::OptimizedRedisServer;
+pub use perf_config::{PerformanceConfig, ResponsePoolConfig, BufferConfig, BatchingConfig};
+pub use connection_optimized::ConnectionConfig;
 pub use sharded_actor::{ShardedActorState, ShardConfig};
 pub use connection_pool::ConnectionPool;
 pub use replicated_state::{ReplicatedShardedState, GossipBackend};

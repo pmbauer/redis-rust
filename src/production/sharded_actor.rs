@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::adaptive_actor::{AdaptiveActor, AdaptiveActorConfig, AdaptiveActorHandle};
 use super::load_balancer::ScalingDecision;
 use super::response_pool::{ResponsePool, ResponseSlot, response_future};
+use super::perf_config::PerformanceConfig;
 
 /// Configuration for dynamic sharding behavior
 #[derive(Clone, Debug)]
@@ -372,9 +373,9 @@ fn hash_key_bytes(key: &[u8], num_shards: usize) -> usize {
     idx
 }
 
-/// Pool configuration constants
-const RESPONSE_POOL_CAPACITY: usize = 256;
-const RESPONSE_POOL_PREWARM: usize = 64;
+/// Pool configuration defaults (used when no PerformanceConfig provided)
+const DEFAULT_RESPONSE_POOL_CAPACITY: usize = 256;
+const DEFAULT_RESPONSE_POOL_PREWARM: usize = 64;
 
 /// Sharded actor state with configurable time source
 ///
@@ -412,6 +413,19 @@ impl ShardedActorState<ProductionTimeSource> {
     pub fn with_config(config: ShardConfig) -> Self {
         Self::with_config_and_time_source(config, ProductionTimeSource::new())
     }
+
+    /// Create with PerformanceConfig (for evolutionary optimization)
+    ///
+    /// This constructor allows tuning all performance-critical parameters
+    /// via the external configuration file.
+    pub fn with_perf_config(perf_config: &PerformanceConfig) -> Self {
+        let shard_config = ShardConfig::with_shards(perf_config.num_shards);
+        Self::with_perf_config_and_time_source(
+            perf_config,
+            shard_config,
+            ProductionTimeSource::new(),
+        )
+    }
 }
 
 /// Generic implementation that works with any TimeSource
@@ -428,10 +442,10 @@ impl<T: TimeSource> ShardedActorState<T> {
         let start_millis = time_source.now_millis();
         let epoch = (start_millis / 1000) as i64;
 
-        // Create shared response pool for all connections
+        // Create shared response pool for all connections (using defaults)
         let response_pool = Arc::new(ResponsePool::new(
-            RESPONSE_POOL_CAPACITY,
-            RESPONSE_POOL_PREWARM,
+            DEFAULT_RESPONSE_POOL_CAPACITY,
+            DEFAULT_RESPONSE_POOL_PREWARM,
         ));
 
         let shards: Vec<ShardHandle> = (0..num_shards)
@@ -470,6 +484,70 @@ impl<T: TimeSource> ShardedActorState<T> {
             start_millis,
             time_source,
             config,
+            adaptive_handle,
+            response_pool,
+        }
+    }
+
+    /// Create with PerformanceConfig and custom time source
+    ///
+    /// This constructor allows full control over all tunable parameters
+    /// for evolutionary optimization.
+    pub fn with_perf_config_and_time_source(
+        perf_config: &PerformanceConfig,
+        shard_config: ShardConfig,
+        time_source: T,
+    ) -> Self {
+        let num_shards = shard_config.initial_shards
+            .max(shard_config.min_shards)
+            .min(shard_config.max_shards);
+
+        // Get epoch from time source
+        let start_millis = time_source.now_millis();
+        let epoch = (start_millis / 1000) as i64;
+
+        // Create shared response pool with PerformanceConfig values
+        let response_pool = Arc::new(ResponsePool::new(
+            perf_config.response_pool.capacity,
+            perf_config.response_pool.prewarm,
+        ));
+
+        let shards: Vec<ShardHandle> = (0..num_shards)
+            .map(|shard_id| {
+                let (tx, rx) = mpsc::unbounded_channel();
+                let actor = ShardActor::new(rx, epoch, shard_id, num_shards);
+                tokio::spawn(actor.run());
+                ShardHandle {
+                    tx,
+                    shard_id,
+                    response_pool: response_pool.clone(),
+                }
+            })
+            .collect();
+
+        // Spawn adaptive actor if any adaptive features are enabled
+        let adaptive_handle = if shard_config.adaptive_replication || shard_config.auto_scale {
+            Some(AdaptiveActor::spawn(AdaptiveActorConfig {
+                enable_hot_key_detection: shard_config.adaptive_replication,
+                enable_load_balancing: shard_config.auto_scale,
+                num_shards,
+                adaptive_config: Default::default(),
+                load_balancer_config: super::load_balancer::LoadBalancerConfig {
+                    min_shards: shard_config.min_shards,
+                    max_shards: shard_config.max_shards,
+                    ..Default::default()
+                },
+            }))
+        } else {
+            None
+        };
+
+        ShardedActorState {
+            shards: Arc::new(shards),
+            num_shards,
+            start_millis,
+            time_source,
+            config: shard_config,
             adaptive_handle,
             response_pool,
         }

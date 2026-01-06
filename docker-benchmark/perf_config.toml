@@ -1,0 +1,54 @@
+# Performance Configuration for Redis-Rust Server
+#
+# This file contains tunable parameters for the evolutionary optimization harness.
+# Modify these values to experiment with different configurations.
+#
+# The OpenEvolve harness will automatically generate and test variations of these
+# parameters to discover optimal settings for your workload.
+
+# Number of shards for data partitioning
+# - Must be a power of 2 (1, 2, 4, 8, 16, 32, 64, 128, 256)
+# - Higher values reduce lock contention but increase memory overhead
+# - Recommended range: 8-64 for most workloads
+num_shards = 16
+
+# Response pool configuration
+# The response pool pre-allocates channels to reduce allocation overhead
+[response_pool]
+# Maximum number of response slots in pool
+# - Higher values reduce channel allocation but increase memory
+# - Recommended range: 64-1024
+capacity = 256
+
+# Number of slots to pre-allocate at startup
+# - Should be <= capacity
+# - Higher prewarm reduces initial allocation latency
+# - Recommended range: 16-256
+prewarm = 64
+
+# Buffer configuration for connection handling
+[buffers]
+# Size of read buffer in bytes
+# - Larger buffers can improve throughput for pipelined commands
+# - Recommended range: 4096-32768
+read_size = 8192
+
+# Maximum buffer size per connection in bytes
+# - Limits memory usage per connection
+# - Should be >= read_size
+# - Default: 1MB (1048576)
+max_size = 1048576
+
+# Batching configuration for pipeline optimization
+[batching]
+# Minimum buffer size to attempt batching
+# - If buffer has >= this many bytes, try to parse multiple commands
+# - Lower values enable more batching but add parsing overhead
+# - Recommended range: 30-200
+min_pipeline_buffer = 60
+
+# Minimum commands to trigger batch execution
+# - Commands are executed individually if fewer than this threshold
+# - Higher values optimize for pipelining, lower for single commands
+# - Recommended range: 2-8
+batch_threshold = 2

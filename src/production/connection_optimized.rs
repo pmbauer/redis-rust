@@ -1,5 +1,6 @@
 use super::ShardedActorState;
 use super::connection_pool::BufferPoolAsync;
+use super::perf_config::{BufferConfig, BatchingConfig};
 use crate::redis::{Command, RespValue, RespCodec};
 use crate::observability::{Metrics, spans};
 use bytes::{BytesMut, BufMut};
@@ -9,7 +10,37 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{info, warn, error, debug, Instrument};
 
-const MAX_BUFFER_SIZE: usize = 1024 * 1024;
+/// Connection configuration (from PerformanceConfig)
+#[derive(Clone)]
+pub struct ConnectionConfig {
+    pub max_buffer_size: usize,
+    pub read_buffer_size: usize,
+    pub min_pipeline_buffer: usize,
+    pub batch_threshold: usize,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        Self {
+            max_buffer_size: 1024 * 1024,  // 1MB
+            read_buffer_size: 8192,
+            min_pipeline_buffer: 60,
+            batch_threshold: 2,
+        }
+    }
+}
+
+impl ConnectionConfig {
+    /// Create from PerformanceConfig components
+    pub fn from_perf_config(buffers: &BufferConfig, batching: &BatchingConfig) -> Self {
+        Self {
+            max_buffer_size: buffers.max_size,
+            read_buffer_size: buffers.read_size,
+            min_pipeline_buffer: batching.min_pipeline_buffer,
+            batch_threshold: batching.batch_threshold,
+        }
+    }
+}
 
 pub struct OptimizedConnectionHandler {
     stream: TcpStream,
@@ -19,6 +50,7 @@ pub struct OptimizedConnectionHandler {
     client_addr: String,
     buffer_pool: Arc<BufferPoolAsync>,
     metrics: Arc<Metrics>,
+    config: ConnectionConfig,
 }
 
 impl OptimizedConnectionHandler {
@@ -29,10 +61,13 @@ impl OptimizedConnectionHandler {
         client_addr: String,
         buffer_pool: Arc<BufferPoolAsync>,
         metrics: Arc<Metrics>,
+        config: ConnectionConfig,
     ) -> Self {
         let buffer = buffer_pool.acquire();
         let write_buffer = buffer_pool.acquire();
         debug_assert!(buffer.capacity() > 0, "Buffer pool returned zero-capacity buffer");
+        debug_assert!(config.max_buffer_size >= config.read_buffer_size,
+            "max_buffer_size must be >= read_buffer_size");
         OptimizedConnectionHandler {
             stream,
             state,
@@ -41,6 +76,7 @@ impl OptimizedConnectionHandler {
             client_addr,
             buffer_pool,
             metrics,
+            config,
         }
     }
 
@@ -57,7 +93,8 @@ impl OptimizedConnectionHandler {
                 warn!("Failed to set TCP_NODELAY: {}", e);
             }
 
-            let mut read_buf = [0u8; 8192];
+            // Use config for read buffer size (stack-allocate with max expected size)
+            let mut read_buf = vec![0u8; self.config.read_buffer_size];
 
             loop {
                 match self.stream.read(&mut read_buf).await {
@@ -66,7 +103,7 @@ impl OptimizedConnectionHandler {
                         break;
                     }
                     Ok(n) => {
-                        if self.buffer.len() + n > MAX_BUFFER_SIZE {
+                        if self.buffer.len() + n > self.config.max_buffer_size {
                             error!("Buffer overflow from {}, closing connection", self.client_addr);
                             Self::encode_error_into("buffer overflow", &mut self.write_buffer);
                             let _ = self.stream.write_all(&self.write_buffer).await;
@@ -83,13 +120,14 @@ impl OptimizedConnectionHandler {
                         // to contain multiple commands. A single GET/SET is ~25-50 bytes, so
                         // 60+ bytes likely means pipelined commands.
                         // This avoids parsing overhead for P=1 (single command) scenarios.
-                        const MIN_PIPELINE_BUFFER_SIZE: usize = 60;
+                        let min_pipeline_buffer = self.config.min_pipeline_buffer;
+                        let batch_threshold = self.config.batch_threshold;
 
-                        if self.buffer.len() >= MIN_PIPELINE_BUFFER_SIZE {
+                        if self.buffer.len() >= min_pipeline_buffer {
                             // Try GET batching first
                             let (get_keys, get_count) = self.collect_get_keys();
 
-                            if get_count >= 2 {
+                            if get_count >= batch_threshold {
                                 // Batch execute multiple GETs concurrently
                                 let start = Instant::now();
                                 let results = self.state.fast_batch_get_pipeline(get_keys).await;
@@ -104,10 +142,10 @@ impl OptimizedConnectionHandler {
                             }
 
                             // Try SET batching if buffer still has enough data
-                            if self.buffer.len() >= MIN_PIPELINE_BUFFER_SIZE {
+                            if self.buffer.len() >= min_pipeline_buffer {
                                 let (set_pairs, set_count) = self.collect_set_pairs();
 
-                                if set_count >= 2 {
+                                if set_count >= batch_threshold {
                                     // Batch execute multiple SETs concurrently
                                     let start = Instant::now();
                                     let results = self.state.fast_batch_set_pipeline(set_pairs).await;
