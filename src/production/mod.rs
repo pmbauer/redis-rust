@@ -11,6 +11,7 @@ mod adaptive_actor;
 mod hotkey;
 mod adaptive_replication;
 mod load_balancer;
+mod response_pool;
 
 pub use server_optimized::OptimizedRedisServer;
 pub use sharded_actor::{ShardedActorState, ShardConfig};

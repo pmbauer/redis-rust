@@ -8,6 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::adaptive_actor::{AdaptiveActor, AdaptiveActorConfig, AdaptiveActorHandle};
 use super::load_balancer::ScalingDecision;
+use super::response_pool::{ResponsePool, ResponseSlot, response_future};
 
 /// Configuration for dynamic sharding behavior
 #[derive(Clone, Debug)]
@@ -93,6 +94,22 @@ pub enum ShardMessage {
         keys: Vec<bytes::Bytes>,
         response_tx: oneshot::Sender<Vec<RespValue>>,
     },
+    /// Fast batch SET - multiple key-value pairs in single message for pipelining
+    FastBatchSet {
+        pairs: Vec<(bytes::Bytes, bytes::Bytes)>,
+        response_tx: oneshot::Sender<Vec<RespValue>>,
+    },
+    /// Pooled fast GET - uses response slot instead of oneshot channel
+    PooledFastGet {
+        key: bytes::Bytes,
+        response_slot: Arc<ResponseSlot<RespValue>>,
+    },
+    /// Pooled fast SET - uses response slot instead of oneshot channel
+    PooledFastSet {
+        key: bytes::Bytes,
+        value: bytes::Bytes,
+        response_slot: Arc<ResponseSlot<RespValue>>,
+    },
 }
 
 pub struct ShardActor {
@@ -150,6 +167,27 @@ impl ShardActor {
                     }
                     let _ = response_tx.send(results);
                 }
+                ShardMessage::FastBatchSet { pairs, response_tx } => {
+                    // Batch SET: process multiple key-value pairs in single message
+                    let mut results = Vec::with_capacity(pairs.len());
+                    for (key, value) in pairs {
+                        let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                        results.push(self.executor.set_direct(key_str, &value));
+                    }
+                    let _ = response_tx.send(results);
+                }
+                ShardMessage::PooledFastGet { key, response_slot } => {
+                    // Pooled fast GET: uses response slot instead of oneshot
+                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                    let response = self.executor.get_direct(key_str);
+                    response_slot.send(response);
+                }
+                ShardMessage::PooledFastSet { key, value, response_slot } => {
+                    // Pooled fast SET: uses response slot instead of oneshot
+                    let key_str = unsafe { std::str::from_utf8_unchecked(&key) };
+                    let response = self.executor.set_direct(key_str, &value);
+                    response_slot.send(response);
+                }
             }
         }
     }
@@ -159,6 +197,8 @@ impl ShardActor {
 pub struct ShardHandle {
     tx: mpsc::UnboundedSender<ShardMessage>,
     shard_id: usize,
+    /// Response pool for reducing channel allocation overhead
+    response_pool: Arc<ResponsePool<RespValue>>,
 }
 
 impl ShardHandle {
@@ -220,6 +260,45 @@ impl ShardHandle {
         })
     }
 
+    /// Pooled fast GET - uses response pool to avoid channel allocation
+    #[inline]
+    pub async fn pooled_fast_get(&self, key: bytes::Bytes) -> RespValue {
+        let response_slot = self.response_pool.acquire();
+        let msg = ShardMessage::PooledFastGet {
+            key,
+            response_slot: response_slot.clone(),
+        };
+
+        if self.tx.send(msg).is_err() {
+            self.response_pool.release(response_slot);
+            return RespValue::Error("ERR shard unavailable".to_string());
+        }
+
+        let result = response_future(response_slot.clone()).await;
+        self.response_pool.release(response_slot);
+        result
+    }
+
+    /// Pooled fast SET - uses response pool to avoid channel allocation
+    #[inline]
+    pub async fn pooled_fast_set(&self, key: bytes::Bytes, value: bytes::Bytes) -> RespValue {
+        let response_slot = self.response_pool.acquire();
+        let msg = ShardMessage::PooledFastSet {
+            key,
+            value,
+            response_slot: response_slot.clone(),
+        };
+
+        if self.tx.send(msg).is_err() {
+            self.response_pool.release(response_slot);
+            return RespValue::Error("ERR shard unavailable".to_string());
+        }
+
+        let result = response_future(response_slot.clone()).await;
+        self.response_pool.release(response_slot);
+        result
+    }
+
     /// Fast batch GET - multiple keys in single actor message
     #[inline]
     pub async fn fast_batch_get(&self, keys: Vec<bytes::Bytes>) -> Vec<RespValue> {
@@ -228,6 +307,24 @@ impl ShardHandle {
         }
         let (response_tx, response_rx) = oneshot::channel();
         let msg = ShardMessage::FastBatchGet { keys, response_tx };
+
+        if self.tx.send(msg).is_err() {
+            return vec![RespValue::Error("ERR shard unavailable".to_string())];
+        }
+
+        response_rx.await.unwrap_or_else(|_| {
+            vec![RespValue::Error("ERR shard response failed".to_string())]
+        })
+    }
+
+    /// Fast batch SET - multiple key-value pairs in single actor message
+    #[inline]
+    pub async fn fast_batch_set(&self, pairs: Vec<(bytes::Bytes, bytes::Bytes)>) -> Vec<RespValue> {
+        if pairs.is_empty() {
+            return Vec::new();
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        let msg = ShardMessage::FastBatchSet { pairs, response_tx };
 
         if self.tx.send(msg).is_err() {
             return vec![RespValue::Error("ERR shard unavailable".to_string())];
@@ -275,6 +372,10 @@ fn hash_key_bytes(key: &[u8], num_shards: usize) -> usize {
     idx
 }
 
+/// Pool configuration constants
+const RESPONSE_POOL_CAPACITY: usize = 256;
+const RESPONSE_POOL_PREWARM: usize = 64;
+
 /// Sharded actor state with configurable time source
 ///
 /// Generic over `T: TimeSource` for zero-cost abstraction:
@@ -291,6 +392,8 @@ pub struct ShardedActorState<T: TimeSource = ProductionTimeSource> {
     config: ShardConfig,
     /// Adaptive components via actor handle (no locks!)
     adaptive_handle: Option<AdaptiveActorHandle>,
+    /// Shared response pool for all shards
+    response_pool: Arc<ResponsePool<RespValue>>,
 }
 
 /// Production-specific constructors (use ProductionTimeSource)
@@ -325,12 +428,22 @@ impl<T: TimeSource> ShardedActorState<T> {
         let start_millis = time_source.now_millis();
         let epoch = (start_millis / 1000) as i64;
 
+        // Create shared response pool for all connections
+        let response_pool = Arc::new(ResponsePool::new(
+            RESPONSE_POOL_CAPACITY,
+            RESPONSE_POOL_PREWARM,
+        ));
+
         let shards: Vec<ShardHandle> = (0..num_shards)
             .map(|shard_id| {
                 let (tx, rx) = mpsc::unbounded_channel();
                 let actor = ShardActor::new(rx, epoch, shard_id, num_shards);
                 tokio::spawn(actor.run());
-                ShardHandle { tx, shard_id }
+                ShardHandle {
+                    tx,
+                    shard_id,
+                    response_pool: response_pool.clone(),
+                }
             })
             .collect();
 
@@ -358,6 +471,7 @@ impl<T: TimeSource> ShardedActorState<T> {
             time_source,
             config,
             adaptive_handle,
+            response_pool,
         }
     }
 
@@ -509,6 +623,28 @@ impl<T: TimeSource> ShardedActorState<T> {
         self.shards[shard_idx].fast_set(key, value).await
     }
 
+    /// Pooled fast GET - uses response pool to avoid channel allocation
+    ///
+    /// This is the recommended method for single GET commands as it
+    /// eliminates oneshot channel allocation overhead.
+    #[inline]
+    pub async fn pooled_fast_get(&self, key: bytes::Bytes) -> RespValue {
+        let shard_idx = hash_key_bytes(&key, self.num_shards);
+        debug_assert!(shard_idx < self.shards.len(), "Shard index out of bounds");
+        self.shards[shard_idx].pooled_fast_get(key).await
+    }
+
+    /// Pooled fast SET - uses response pool to avoid channel allocation
+    ///
+    /// This is the recommended method for single SET commands as it
+    /// eliminates oneshot channel allocation overhead.
+    #[inline]
+    pub async fn pooled_fast_set(&self, key: bytes::Bytes, value: bytes::Bytes) -> RespValue {
+        let shard_idx = hash_key_bytes(&key, self.num_shards);
+        debug_assert!(shard_idx < self.shards.len(), "Shard index out of bounds");
+        self.shards[shard_idx].pooled_fast_set(key, value).await
+    }
+
     /// Execute batched GETs concurrently across shards
     ///
     /// Groups keys by shard, sends batch requests concurrently, and reconstructs
@@ -539,6 +675,58 @@ impl<T: TimeSource> ShardedActorState<T> {
                 let shard = &self.shards[shard_idx];
                 futures.push(async move {
                     let shard_results = shard.fast_batch_get(shard_keys).await;
+                    (indices, shard_results)
+                });
+            }
+        }
+
+        // Await all shard responses concurrently
+        let all_results = futures::future::join_all(futures).await;
+
+        // Reconstruct results in original order
+        for (indices, shard_results) in all_results {
+            for (i, resp) in indices.into_iter().zip(shard_results.into_iter()) {
+                results[i] = resp;
+            }
+        }
+
+        results
+    }
+
+    /// Execute batched SETs concurrently across shards
+    ///
+    /// Groups key-value pairs by shard, sends batch requests concurrently, and
+    /// reconstructs results in original order. This reduces channel round-trips
+    /// from N to num_shards.
+    ///
+    /// Returns Vec<RespValue> in the same order as input pairs.
+    pub async fn fast_batch_set_pipeline(&self, pairs: Vec<(bytes::Bytes, bytes::Bytes)>) -> Vec<RespValue> {
+        if pairs.is_empty() {
+            return Vec::new();
+        }
+
+        // Group pairs by shard, tracking original indices for result reconstruction
+        let mut shard_batches: Vec<Vec<(usize, bytes::Bytes, bytes::Bytes)>> = vec![Vec::new(); self.num_shards];
+        for (idx, (key, value)) in pairs.iter().enumerate() {
+            let shard_idx = hash_key_bytes(key, self.num_shards);
+            shard_batches[shard_idx].push((idx, key.clone(), value.clone()));
+        }
+
+        // Prepare results vector (default to OK for SETs)
+        let mut results = vec![RespValue::SimpleString("OK".to_string()); pairs.len()];
+
+        // Send batch requests to all non-empty shards concurrently
+        let mut futures = Vec::new();
+        for (shard_idx, batch) in shard_batches.into_iter().enumerate() {
+            if !batch.is_empty() {
+                let indices: Vec<usize> = batch.iter().map(|(idx, _, _)| *idx).collect();
+                let shard_pairs: Vec<(bytes::Bytes, bytes::Bytes)> = batch
+                    .into_iter()
+                    .map(|(_, key, value)| (key, value))
+                    .collect();
+                let shard = &self.shards[shard_idx];
+                futures.push(async move {
+                    let shard_results = shard.fast_batch_set(shard_pairs).await;
                     (indices, shard_results)
                 });
             }

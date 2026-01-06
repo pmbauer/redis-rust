@@ -79,21 +79,48 @@ impl OptimizedConnectionHandler {
                         let mut commands_executed = 0;
                         let mut had_parse_error = false;
 
-                        // OPTIMIZATION: First, collect all parseable GET keys for batching
-                        let (get_keys, get_count) = self.collect_get_keys();
+                        // OPTIMIZATION: Only attempt batching when buffer is large enough
+                        // to contain multiple commands. A single GET/SET is ~25-50 bytes, so
+                        // 60+ bytes likely means pipelined commands.
+                        // This avoids parsing overhead for P=1 (single command) scenarios.
+                        const MIN_PIPELINE_BUFFER_SIZE: usize = 60;
 
-                        if get_count >= 2 {
-                            // Batch execute multiple GETs concurrently
-                            let start = Instant::now();
-                            let results = self.state.fast_batch_get_pipeline(get_keys).await;
-                            let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+                        if self.buffer.len() >= MIN_PIPELINE_BUFFER_SIZE {
+                            // Try GET batching first
+                            let (get_keys, get_count) = self.collect_get_keys();
 
-                            for response in &results {
-                                let success = !matches!(response, RespValue::Error(_));
-                                self.metrics.record_command("GET", duration_ms / results.len() as f64, success);
-                                Self::encode_resp_into(response, &mut self.write_buffer);
+                            if get_count >= 2 {
+                                // Batch execute multiple GETs concurrently
+                                let start = Instant::now();
+                                let results = self.state.fast_batch_get_pipeline(get_keys).await;
+                                let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+                                for response in &results {
+                                    let success = !matches!(response, RespValue::Error(_));
+                                    self.metrics.record_command("GET", duration_ms / results.len() as f64, success);
+                                    Self::encode_resp_into(response, &mut self.write_buffer);
+                                }
+                                commands_executed += get_count;
                             }
-                            commands_executed += get_count;
+
+                            // Try SET batching if buffer still has enough data
+                            if self.buffer.len() >= MIN_PIPELINE_BUFFER_SIZE {
+                                let (set_pairs, set_count) = self.collect_set_pairs();
+
+                                if set_count >= 2 {
+                                    // Batch execute multiple SETs concurrently
+                                    let start = Instant::now();
+                                    let results = self.state.fast_batch_set_pipeline(set_pairs).await;
+                                    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+                                    for response in &results {
+                                        let success = !matches!(response, RespValue::Error(_));
+                                        self.metrics.record_command("SET", duration_ms / results.len() as f64, success);
+                                        Self::encode_resp_into(response, &mut self.write_buffer);
+                                    }
+                                    commands_executed += set_count;
+                                }
+                            }
                         }
 
                         // Process remaining commands sequentially
@@ -246,6 +273,90 @@ impl OptimizedConnectionHandler {
         (keys, count)
     }
 
+    /// Collect all parseable SET key-value pairs from the buffer for batched execution
+    ///
+    /// Returns (pairs, count) - the (key, value) pairs to SET and how many commands were parsed.
+    /// Consumes the SET commands from the buffer.
+    #[inline]
+    fn collect_set_pairs(&mut self) -> (Vec<(bytes::Bytes, bytes::Bytes)>, usize) {
+        let mut pairs = Vec::new();
+        const HEADER_LEN: usize = 14; // "*3\r\n$3\r\nSET\r\n"
+
+        loop {
+            let buf = &self.buffer[..];
+
+            // Need minimum bytes to detect SET
+            if buf.len() < HEADER_LEN + 1 {
+                break;
+            }
+
+            // Check for SET command
+            if !buf.starts_with(b"*3\r\n$3\r\nSET\r\n") && !buf.starts_with(b"*3\r\n$3\r\nset\r\n") {
+                break; // Not a SET, stop collecting
+            }
+
+            // Parse key length: $<len>\r\n
+            let after_header = &buf[HEADER_LEN..];
+            if after_header.is_empty() || after_header[0] != b'$' {
+                break;
+            }
+
+            // Find \r\n after key length
+            let Some(key_len_crlf) = memchr::memchr(b'\r', &after_header[1..]) else {
+                break; // Need more data
+            };
+
+            // Parse key length
+            let key_len_str = &after_header[1..key_len_crlf + 1];
+            let Ok(key_len) = std::str::from_utf8(key_len_str).ok().and_then(|s| s.parse::<usize>().ok()).ok_or(()) else {
+                break; // Invalid, stop
+            };
+
+            // Calculate key position
+            let key_start = HEADER_LEN + 1 + key_len_crlf + 2; // After $<keylen>\r\n
+            let key_end = key_start + key_len;
+            let val_len_start = key_end + 2; // After key\r\n
+
+            if buf.len() < val_len_start + 1 {
+                break; // Need more data
+            }
+
+            // Parse value length: $<len>\r\n
+            if buf[val_len_start] != b'$' {
+                break; // Invalid format
+            }
+
+            let after_key = &buf[val_len_start + 1..];
+            let Some(val_len_crlf) = memchr::memchr(b'\r', after_key) else {
+                break; // Need more data
+            };
+
+            let val_len_str = &after_key[..val_len_crlf];
+            let Ok(val_len) = std::str::from_utf8(val_len_str).ok().and_then(|s| s.parse::<usize>().ok()).ok_or(()) else {
+                break; // Invalid
+            };
+
+            // Calculate value position and total length
+            let val_start = val_len_start + 1 + val_len_crlf + 2; // After $<vallen>\r\n
+            let total_needed = val_start + val_len + 2; // value + \r\n
+
+            if buf.len() < total_needed {
+                break; // Need more data
+            }
+
+            // Extract key and value
+            let key = bytes::Bytes::copy_from_slice(&buf[key_start..key_end]);
+            let value = bytes::Bytes::copy_from_slice(&buf[val_start..val_start + val_len]);
+            pairs.push((key, value));
+
+            // Consume this SET from buffer
+            let _ = self.buffer.split_to(total_needed);
+        }
+
+        let count = pairs.len();
+        (pairs, count)
+    }
+
     /// Fast path for GET/SET commands - bypasses full RESP parsing
     ///
     /// RESP format for GET: *2\r\n$3\r\nGET\r\n$<keylen>\r\n<key>\r\n
@@ -316,9 +427,9 @@ impl OptimizedConnectionHandler {
         // Consume the parsed bytes from buffer
         let _ = self.buffer.split_to(total_needed);
 
-        // Execute fast GET
+        // Execute fast GET using pooled response slot (avoids oneshot allocation)
         let start = Instant::now();
-        let response = self.state.fast_get(key).await;
+        let response = self.state.pooled_fast_get(key).await;
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
         let success = !matches!(&response, RespValue::Error(_));
         self.metrics.record_command("GET", duration_ms, success);
@@ -393,9 +504,9 @@ impl OptimizedConnectionHandler {
         // Consume the parsed bytes
         let _ = self.buffer.split_to(total_needed);
 
-        // Execute fast SET
+        // Execute fast SET using pooled response slot (avoids oneshot allocation)
         let start = Instant::now();
-        let response = self.state.fast_set(key, value).await;
+        let response = self.state.pooled_fast_set(key, value).await;
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
         let success = !matches!(&response, RespValue::Error(_));
         self.metrics.record_command("SET", duration_ms, success);
