@@ -10,12 +10,13 @@ An experimental, actor-based Redis-compatible cache server in Rust with distribu
 
 - **Redis-Compatible Server**: Compatible with `redis-cli` and all Redis clients (RESP2 protocol)
 - **Tiger Style Engineering**: Explicit over implicit, assertion-heavy, deterministic behavior
-- **50+ Redis Commands**: Full caching feature set (strings, lists, sets, hashes, sorted sets)
+- **60+ Redis Commands**: Full caching feature set (strings, lists, sets, hashes, sorted sets)
+- **Lua Scripting**: EVAL/EVALSHA with full Redis command access from Lua
 - **Dynamic Shard Architecture**: Runtime-configurable shards with lock-free message passing
 - **Anna KVS-Style Replication**: Configurable consistency (eventual, causal), coordination-free
 - **Hot Key Detection**: Adaptive replication for high-traffic keys
 - **Deterministic Simulation**: FoundationDB/TigerBeetle-style testing harness
-- **Redis Equivalence Testing**: Differential testing against real Redis (27 commands verified)
+- **Redis Equivalence Testing**: Differential testing against real Redis (30+ commands verified)
 - **Zipfian Workload Simulation**: Realistic hot/cold key access patterns
 - **Maelstrom/Jepsen Integration**: Formal linearizability testing (single-node verified)
 - **Datadog Observability**: Optional metrics, tracing, and logging via feature flag
@@ -29,7 +30,7 @@ cargo run --bin redis-server-optimized --release
 # Connect with redis-cli
 redis-cli -p 3000
 
-# Run all tests (480+ tests)
+# Run all tests (500+ tests)
 cargo test --all
 
 # Run benchmarks
@@ -119,7 +120,7 @@ Node 1                    Node 2                    Node 3
 
 ## Testing
 
-### Test Suite (480+ tests total)
+### Test Suite (500+ tests total)
 
 ```bash
 # Unit tests
@@ -133,8 +134,9 @@ cargo test redis_equivalence --release -- --ignored
 ```
 
 **Test Categories:**
-- **Unit Tests** (372+): Core Redis commands, RESP parsing, data structures, VOPR invariants
-- **Redis Equivalence** (27 commands): Differential testing against real Redis
+- **Unit Tests** (400+): Core Redis commands, RESP parsing, data structures, VOPR invariants
+- **Lua Scripting** (37): EVAL/EVALSHA execution, Redis commands from Lua
+- **Redis Equivalence** (30+ commands): Differential testing against real Redis
 - **Eventual Consistency** (9): CRDT convergence, partition healing
 - **Causal Consistency** (10): Vector clocks, read-your-writes, happens-before
 - **CRDT DST** (15): Multi-seed CRDT convergence testing (100+ seeds)
@@ -159,14 +161,14 @@ REDIS_PORT=3000 cargo run --bin redis-server-optimized --release &
 cargo test redis_equivalence --release -- --ignored
 ```
 
-**27 core commands verified identical** including:
-- String operations (GET, SET, APPEND, STRLEN, GETRANGE)
+**30+ core commands verified identical** including:
+- String operations (GET, SET with NX/XX/EX/PX/GET, APPEND, STRLEN, GETRANGE)
 - Numeric operations (INCR, DECR, INCRBY, DECRBY)
-- Hash operations (HSET, HGET, HDEL, HGETALL, HINCRBY)
-- List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN)
+- Hash operations (HSET, HGET, HDEL, HGETALL, HINCRBY, HSCAN)
+- List operations (LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, LSET, LTRIM, RPOPLPUSH, LMOVE)
 - Set operations (SADD, SREM, SMEMBERS, SISMEMBER, SCARD)
-- Sorted set operations (ZADD, ZSCORE, ZRANK, ZRANGE, ZCARD)
-- Key operations (DEL, EXISTS, TYPE, EXPIRE, TTL)
+- Sorted set operations (ZADD, ZSCORE, ZRANK, ZRANGE, ZCARD, ZCOUNT, ZRANGEBYSCORE, ZSCAN)
+- Key operations (DEL, EXISTS, TYPE, EXPIRE, TTL, SCAN)
 
 ### Zipfian Workload Simulation
 
@@ -205,22 +207,25 @@ This simulates real-world workloads where a small subset of keys receive disprop
 `EXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`
 
 ### Keys
-`DEL`, `EXISTS`, `TYPE`, `KEYS`, `FLUSHDB`, `FLUSHALL`
+`DEL`, `EXISTS`, `TYPE`, `KEYS`, `FLUSHDB`, `FLUSHALL`, `SCAN`
 
 ### Lists
-`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `LINDEX`
+`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LRANGE`, `LINDEX`, `LSET`, `LTRIM`, `RPOPLPUSH`, `LMOVE`
 
 ### Sets
 `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SCARD`
 
 ### Hashes
-`HSET`, `HGET`, `HDEL`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HINCRBY`
+`HSET`, `HGET`, `HDEL`, `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HEXISTS`, `HINCRBY`, `HSCAN`
 
 ### Sorted Sets
-`ZADD`, `ZREM`, `ZSCORE`, `ZRANK`, `ZRANGE`, `ZREVRANGE`, `ZCARD`
+`ZADD`, `ZREM`, `ZSCORE`, `ZRANK`, `ZRANGE`, `ZREVRANGE`, `ZCARD`, `ZCOUNT`, `ZRANGEBYSCORE`, `ZSCAN`
 
 ### Server
 `PING`, `INFO`
+
+### Scripting
+`EVAL`, `EVALSHA`
 
 ## Redis Compatibility
 
@@ -254,7 +259,6 @@ These features conflict with the CRDT/eventual consistency architecture:
 ### Not Implemented (Roadmap)
 These could be added without architectural changes:
 - **Pub/Sub**: PUBLISH, SUBSCRIBE, PSUBSCRIBE
-- **Lua scripting**: EVAL, EVALSHA, SCRIPT
 - **Streams**: XADD, XREAD, XRANGE, XGROUP
 - **Authentication**: AUTH, ACL commands
 - **TLS**: Encrypted connections
@@ -269,15 +273,15 @@ These could be added without architectural changes:
 | Clustering | Redis Cluster | Anna-style CRDT |
 | Consistency | Single-leader strong | Eventual/Causal |
 | Pub/Sub | Yes | No |
-| Lua Scripting | Yes | No |
+| Lua Scripting | Yes | Yes (EVAL/EVALSHA) |
 | Streams | Yes | No |
 | ACL/Auth | Yes | No |
 | Hot Key Handling | Manual | Automatic detection |
 | Deterministic Testing | No | Yes (DST framework) |
-| Differential Testing | N/A | Yes (27 commands vs Redis) |
+| Differential Testing | N/A | Yes (30+ commands vs Redis) |
 | Datadog Integration | Via plugin | Native (feature flag) |
 
-**Trade-offs**: We sacrifice some Redis features (pub/sub, Lua) in favor of coordination-free replication, streaming persistence to object stores (S3/local), and deterministic simulation testing.
+**Trade-offs**: We sacrifice some Redis features (pub/sub, streams) in favor of coordination-free replication, streaming persistence to object stores (S3/local), and deterministic simulation testing.
 
 ## Project Structure
 

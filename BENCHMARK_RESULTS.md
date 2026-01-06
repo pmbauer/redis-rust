@@ -201,7 +201,7 @@ Client Connection
 | Clustering | Redis Cluster | Anna-style CRDT | Different model |
 | Consistency | Strong (single-leader) | Eventual/Causal | Trade-off |
 | Pub/Sub | Yes | No | Not implemented |
-| Lua Scripting | Yes | No | Not implemented |
+| Lua Scripting | Yes | Yes (EVAL/EVALSHA) | 37 tests |
 | Memory Safety | Manual C | Rust guarantees | Safer |
 | Deterministic Testing | No | DST framework | Better testability |
 | Hot Key Detection | Manual | Automatic | Better |
@@ -210,7 +210,7 @@ Client Connection
 
 **What we sacrifice:**
 - Traditional persistence (RDB/AOF) - we use streaming object store instead
-- Pub/Sub, Streams, Lua scripting
+- Pub/Sub, Streams
 - Strong consistency in multi-node
 
 **What we gain:**
@@ -260,12 +260,13 @@ Streaming persistence provides durable storage via object stores (S3/LocalFs) wi
 
 ## Correctness Testing
 
-### Test Suite (480+ tests total)
+### Test Suite (500+ tests total)
 
 | Category | Tests | Coverage |
 |----------|-------|----------|
-| Unit Tests | 372+ | RESP parsing, commands, data structures, VOPR invariants |
-| Redis Equivalence | 27 | Differential testing vs real Redis (27 commands verified) |
+| Unit Tests | 400+ | RESP parsing, commands, data structures, VOPR invariants |
+| Lua Scripting | 37 | EVAL/EVALSHA execution, Redis commands from Lua |
+| Redis Equivalence | 30+ | Differential testing vs real Redis (30+ commands verified) |
 | Eventual Consistency | 9 | CRDT convergence, partition healing |
 | Causal Consistency | 10 | Vector clocks, read-your-writes |
 | CRDT DST | 15 | Multi-seed CRDT convergence (100+ seeds, Zipfian distribution) |
@@ -364,8 +365,9 @@ The Tiger Style Redis server demonstrates:
 - **Memory-safe** Rust implementation with no data races
 - **Deterministic testability** via FoundationDB-style simulation (DST)
 - **TigerStyle VOPR** invariant checking on all data structures
-- **480+ tests** covering consistency, replication, persistence, and chaos scenarios
-- **Redis equivalence testing** - 27 commands verified identical to real Redis
+- **500+ tests** covering consistency, replication, persistence, Lua scripting, and chaos scenarios
+- **Redis equivalence testing** - 30+ commands verified identical to real Redis
+- **Lua scripting** - EVAL/EVALSHA with 37 tests covering Redis command access from Lua
 - **Zipfian workload simulation** for realistic hot/cold key patterns
 - **S3-persistent mode** competitive with Redis AOF (+4-41% on pipelined)
 
@@ -438,5 +440,5 @@ cd docker-benchmark
 ### Known Limitations
 
 1. **Streaming persistence**: Object store-based (S3/LocalFs), not traditional RDB/AOF
-2. **No pub/sub**: Not implemented
+2. **No pub/sub or streams**: Not implemented
 3. **Multi-node consistency**: Eventual, not linearizable (by design)
