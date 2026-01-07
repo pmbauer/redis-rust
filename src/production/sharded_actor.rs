@@ -129,6 +129,22 @@ impl ShardActor {
         executor.set_simulation_start_epoch(simulation_start_epoch);
         ShardActor { executor, rx, shard_id, num_shards }
     }
+    
+    /// Create a new ShardActor with a shared script cache
+    /// 
+    /// This allows all shards to share a single script cache for multi-shard Lua support.
+    fn new_with_shared_scripts(
+        rx: mpsc::UnboundedReceiver<ShardMessage>,
+        simulation_start_epoch: i64,
+        shard_id: usize,
+        num_shards: usize,
+        shared_script_cache: crate::redis::lua::SharedScriptCache,
+    ) -> Self {
+        debug_assert!(shard_id < num_shards, "Shard ID {} out of bounds for {} shards", shard_id, num_shards);
+        let mut executor = CommandExecutor::with_shared_script_cache(shared_script_cache);
+        executor.set_simulation_start_epoch(simulation_start_epoch);
+        ShardActor { executor, rx, shard_id, num_shards }
+    }
 
     async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
@@ -395,6 +411,9 @@ pub struct ShardedActorState<T: TimeSource = ProductionTimeSource> {
     adaptive_handle: Option<AdaptiveActorHandle>,
     /// Shared response pool for all shards
     response_pool: Arc<ResponsePool<RespValue>>,
+    /// Shared script cache for Lua scripts (allows SCRIPT LOAD to work across all shards)
+    #[allow(dead_code)]
+    shared_script_cache: crate::redis::lua::SharedScriptCache,
 }
 
 /// Production-specific constructors (use ProductionTimeSource)
@@ -448,10 +467,20 @@ impl<T: TimeSource> ShardedActorState<T> {
             DEFAULT_RESPONSE_POOL_PREWARM,
         ));
 
+        // Create shared script cache for all shards (enables multi-shard Lua support)
+        let shared_script_cache = crate::redis::lua::SharedScriptCache::new();
+
         let shards: Vec<ShardHandle> = (0..num_shards)
             .map(|shard_id| {
                 let (tx, rx) = mpsc::unbounded_channel();
-                let actor = ShardActor::new(rx, epoch, shard_id, num_shards);
+                // Use shared script cache for all shards
+                let actor = ShardActor::new_with_shared_scripts(
+                    rx,
+                    epoch,
+                    shard_id,
+                    num_shards,
+                    shared_script_cache.clone(),
+                );
                 tokio::spawn(actor.run());
                 ShardHandle {
                     tx,
@@ -486,6 +515,7 @@ impl<T: TimeSource> ShardedActorState<T> {
             config,
             adaptive_handle,
             response_pool,
+            shared_script_cache,
         }
     }
 
@@ -512,10 +542,20 @@ impl<T: TimeSource> ShardedActorState<T> {
             perf_config.response_pool.prewarm,
         ));
 
+        // Create shared script cache for all shards (enables multi-shard Lua support)
+        let shared_script_cache = crate::redis::lua::SharedScriptCache::new();
+
         let shards: Vec<ShardHandle> = (0..num_shards)
             .map(|shard_id| {
                 let (tx, rx) = mpsc::unbounded_channel();
-                let actor = ShardActor::new(rx, epoch, shard_id, num_shards);
+                // Use shared script cache for all shards
+                let actor = ShardActor::new_with_shared_scripts(
+                    rx,
+                    epoch,
+                    shard_id,
+                    num_shards,
+                    shared_script_cache.clone(),
+                );
                 tokio::spawn(actor.run());
                 ShardHandle {
                     tx,
@@ -550,6 +590,7 @@ impl<T: TimeSource> ShardedActorState<T> {
             config: shard_config,
             adaptive_handle,
             response_pool,
+            shared_script_cache,
         }
     }
 

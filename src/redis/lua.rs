@@ -2,12 +2,14 @@
 //!
 //! This module provides:
 //! - Script caching via SHA1 for EVALSHA
+//! - Thread-safe shared script cache for multi-shard support
 //! - The actual Lua execution is in commands.rs execute_lua_script method
 //!
 //! TigerStyle: All functions have precondition/postcondition assertions.
 
 use ahash::AHashMap;
 use sha1::{Digest, Sha1};
+use std::sync::{Arc, RwLock};
 
 /// Script cache for EVALSHA - maps SHA1 -> script source
 #[derive(Debug, Default)]
@@ -63,6 +65,70 @@ impl ScriptCache {
 /// Simple hex encoding (avoid external dependency)
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Thread-safe shared script cache for multi-shard support
+/// 
+/// This wrapper allows all shards to share a single script cache,
+/// ensuring SCRIPT LOAD works correctly regardless of which shard receives the command.
+#[derive(Debug, Clone)]
+pub struct SharedScriptCache {
+    inner: Arc<RwLock<ScriptCache>>,
+}
+
+impl Default for SharedScriptCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedScriptCache {
+    /// Create a new shared script cache
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(ScriptCache::new())),
+        }
+    }
+
+    /// Compute SHA1 hash of a script (delegated to ScriptCache)
+    pub fn compute_sha1(script: &str) -> String {
+        ScriptCache::compute_sha1(script)
+    }
+
+    /// Cache a script and return its SHA1
+    /// 
+    /// Thread-safe: acquires write lock
+    pub fn cache_script(&self, script: &str) -> String {
+        debug_assert!(!script.is_empty(), "Precondition: script must not be empty");
+        
+        let mut cache = self.inner.write().expect("Script cache lock poisoned");
+        cache.cache_script(script)
+    }
+
+    /// Get a script by SHA1
+    /// 
+    /// Thread-safe: acquires read lock and clones the script
+    /// Returns owned String to avoid holding the lock
+    pub fn get_script(&self, sha1: &str) -> Option<String> {
+        let cache = self.inner.read().expect("Script cache lock poisoned");
+        cache.get_script(sha1).cloned()
+    }
+
+    /// Check if a script exists
+    /// 
+    /// Thread-safe: acquires read lock
+    pub fn has_script(&self, sha1: &str) -> bool {
+        let cache = self.inner.read().expect("Script cache lock poisoned");
+        cache.has_script(sha1)
+    }
+
+    /// Clear all cached scripts
+    /// 
+    /// Thread-safe: acquires write lock
+    pub fn flush(&self) {
+        let mut cache = self.inner.write().expect("Script cache lock poisoned");
+        cache.flush()
+    }
 }
 
 #[cfg(test)]

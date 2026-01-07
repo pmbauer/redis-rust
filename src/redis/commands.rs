@@ -1637,8 +1637,10 @@ pub struct CommandExecutor {
     in_transaction: bool,
     queued_commands: Vec<Command>,
     watched_keys: AHashMap<String, Option<Value>>,  // key -> value at watch time
-    // Lua scripting (only script cache - engine created per-execution)
+    // Lua scripting - local cache for single-shard mode
     script_cache: super::lua::ScriptCache,
+    // Shared script cache for multi-shard mode (all shards share one cache)
+    shared_script_cache: Option<super::lua::SharedScriptCache>,
 }
 
 impl Command {
@@ -1814,6 +1816,72 @@ impl CommandExecutor {
             queued_commands: Vec::new(),
             watched_keys: AHashMap::new(),
             script_cache: super::lua::ScriptCache::new(),
+            shared_script_cache: None,
+        }
+    }
+    
+    /// Create a new CommandExecutor with a shared script cache
+    /// 
+    /// This is used in multi-shard mode to ensure all shards share
+    /// the same script cache, allowing SCRIPT LOAD on any shard to
+    /// make scripts available on all shards.
+    pub fn with_shared_script_cache(shared_cache: super::lua::SharedScriptCache) -> Self {
+        CommandExecutor {
+            data: AHashMap::new(),
+            expirations: AHashMap::new(),
+            current_time: VirtualTime::from_millis(0),
+            access_times: AHashMap::new(),
+            key_count: 0,
+            commands_processed: 0,
+            simulation_start_epoch: 0,
+            in_transaction: false,
+            queued_commands: Vec::new(),
+            watched_keys: AHashMap::new(),
+            script_cache: super::lua::ScriptCache::new(),
+            shared_script_cache: Some(shared_cache),
+        }
+    }
+    
+    /// Set the shared script cache (for updating after creation)
+    pub fn set_shared_script_cache(&mut self, shared_cache: super::lua::SharedScriptCache) {
+        self.shared_script_cache = Some(shared_cache);
+    }
+    
+    // Helper methods for script cache operations that check shared cache first
+    
+    /// Cache a script and return its SHA1
+    fn cache_script_internal(&mut self, script: &str) -> String {
+        if let Some(ref shared) = self.shared_script_cache {
+            shared.cache_script(script)
+        } else {
+            self.script_cache.cache_script(script)
+        }
+    }
+    
+    /// Get a script by SHA1
+    fn get_script_internal(&self, sha1: &str) -> Option<String> {
+        if let Some(ref shared) = self.shared_script_cache {
+            shared.get_script(sha1)
+        } else {
+            self.script_cache.get_script(sha1).cloned()
+        }
+    }
+    
+    /// Check if a script exists
+    fn has_script_internal(&self, sha1: &str) -> bool {
+        if let Some(ref shared) = self.shared_script_cache {
+            shared.has_script(sha1)
+        } else {
+            self.script_cache.has_script(sha1)
+        }
+    }
+    
+    /// Flush all scripts
+    fn flush_scripts_internal(&mut self) {
+        if let Some(ref shared) = self.shared_script_cache {
+            shared.flush()
+        } else {
+            self.script_cache.flush()
         }
     }
     
@@ -3380,8 +3448,8 @@ impl CommandExecutor {
             Command::EvalSha { sha1, keys, args } => {
                 #[cfg(feature = "lua")]
                 {
-                    // Look up script in cache
-                    match self.script_cache.get_script(sha1) {
+                    // Look up script in cache (uses shared cache if available)
+                    match self.get_script_internal(sha1) {
                         Some(script) => {
                             let script = script.clone();
                             self.execute_lua_script(&script, keys, args)
@@ -3399,7 +3467,7 @@ impl CommandExecutor {
             Command::ScriptLoad(script) => {
                 #[cfg(feature = "lua")]
                 {
-                    let sha1 = self.script_cache.cache_script(&script);
+                    let sha1 = self.cache_script_internal(&script);
                     RespValue::BulkString(Some(sha1.into_bytes()))
                 }
                 #[cfg(not(feature = "lua"))]
@@ -3415,7 +3483,7 @@ impl CommandExecutor {
                     let results: Vec<RespValue> = sha1s
                         .iter()
                         .map(|sha1| {
-                            if self.script_cache.has_script(sha1) {
+                            if self.has_script_internal(sha1) {
                                 RespValue::Integer(1)
                             } else {
                                 RespValue::Integer(0)
@@ -3434,7 +3502,7 @@ impl CommandExecutor {
             Command::ScriptFlush => {
                 #[cfg(feature = "lua")]
                 {
-                    self.script_cache.flush();
+                    self.flush_scripts_internal();
                     RespValue::SimpleString("OK".to_string())
                 }
                 #[cfg(not(feature = "lua"))]
@@ -3465,9 +3533,9 @@ impl CommandExecutor {
         #[cfg(debug_assertions)]
         let initial_key_count = self.data.len();
 
-        // Cache the script for EVALSHA
+        // Cache the script for EVALSHA (uses shared cache if available)
         #[allow(unused_variables)]
-        let script_sha = self.script_cache.cache_script(script);
+        let script_sha = self.cache_script_internal(script);
 
         // Create a new Lua instance for this execution
         let lua = Lua::new();
@@ -3600,7 +3668,7 @@ impl CommandExecutor {
         {
             // Verify script was cached
             debug_assert!(
-                self.script_cache.has_script(&script_sha),
+                self.has_script_internal(&script_sha),
                 "Postcondition: script must be cached after execution"
             );
 
